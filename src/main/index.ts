@@ -21,7 +21,7 @@ import {
 import { EventDeduper } from '@shared/dedupe';
 import { normalizeEvent } from '@shared/normalize';
 import { detectAgents, installHook, uninstallHook } from '@shared/configAdapters';
-import { createPermissionTimeoutResponse } from '@shared/permission';
+import { createPermissionTimeoutResponse, getPermissionNoticeTimeoutMs } from '@shared/permission';
 import { startIpcServer, type IpcServerHandle } from './ipcServer';
 import { startCodexReplyWatcher, type CodexReplyWatcher } from './codexReplyWatcher';
 import { focusWindowsTerminal, jumpToWorkspace } from './jump';
@@ -166,7 +166,7 @@ function createIslandWindow(): void {
 
   islandWindow.setAlwaysOnTop(true, 'screen-saver');
   islandWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  islandWindow.setIgnoreMouseEvents(true, { forward: true });
+  updateIslandMouseInteractivity();
   islandWindow.on('ready-to-show', () => {
     positionIsland();
     islandWindow?.showInactive();
@@ -224,8 +224,13 @@ function setIslandExpanded(expanded: boolean): void {
   if (!islandWindow || islandWindow.isDestroyed()) return;
   islandExpanded = expanded;
   positionIsland();
-  islandWindow.setIgnoreMouseEvents(!expanded && !islandHovered, { forward: true });
+  updateIslandMouseInteractivity();
   islandWindow.webContents.send('island:expanded', expanded);
+}
+
+function updateIslandMouseInteractivity(): void {
+  if (!islandWindow || islandWindow.isDestroyed()) return;
+  islandWindow.setIgnoreMouseEvents(!islandExpanded && !islandHovered, { forward: true });
 }
 
 function getIslandCanvasBounds(): Electron.Rectangle {
@@ -277,7 +282,7 @@ function registerIpc(paths: ReturnType<typeof makeStoragePaths>): void {
   ipcMain.handle('island:set-hovered', (_event, hovered: boolean) => {
     if (!islandWindow || islandWindow.isDestroyed()) return;
     islandHovered = Boolean(hovered);
-    islandWindow.setIgnoreMouseEvents(!islandExpanded && !islandHovered, { forward: true });
+    updateIslandMouseInteractivity();
   });
   ipcMain.handle('window:settings', openSettings);
   ipcMain.handle('shell:open-path', (_event, path: string) => shell.openPath(path));
@@ -385,7 +390,7 @@ function waitForPermission(request: PermissionRequest): Promise<PermissionRespon
   state.addPermission(request);
   broadcastSnapshot();
   showIsland();
-  setIslandExpanded(true);
+  setIslandExpanded(false);
   const config = state.getConfig();
   if (config.notifications && config.notificationStrategy !== 'silent') {
     new Notification({ title: request.action, body: request.command }).show();
@@ -395,8 +400,7 @@ function waitForPermission(request: PermissionRequest): Promise<PermissionRespon
     const timer = setTimeout(() => {
       const response = createPermissionTimeoutResponse(request.id);
       resolvePermission(response);
-      resolve(response);
-    }, Math.max(1000, request.timeoutMs));
+    }, getPermissionNoticeTimeoutMs(request.timeoutMs));
 
     permissionWaiters.set(request.id, { resolve, timer });
   });
@@ -410,6 +414,7 @@ function resolvePermission(response: PermissionResponse): void {
     permissionWaiters.delete(response.id);
   }
   state.resolvePermission(response);
+  updateIslandMouseInteractivity();
   broadcastSnapshot();
 }
 

@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -48,5 +49,33 @@ describe('config adapters', () => {
 
     expect(JSON.stringify(uninstalled)).not.toContain('vibe-island-hook');
     expect(uninstalled.hooks).toEqual({});
+  });
+
+  it('prefers Claude Desktop 3p config when present', async () => {
+    const desktopConfigPath = join(home, 'AppData', 'Local', 'Claude-3p', 'claude_desktop_config.json');
+    const legacySettingsPath = join(home, '.claude', 'settings.json');
+    await mkdir(dirname(desktopConfigPath), { recursive: true });
+    await writeFile(
+      desktopConfigPath,
+      JSON.stringify({
+        deploymentMode: '3p',
+        mcpServers: {
+          gbrain: {
+            command: 'O:/CCTest/tools/gbrain.cmd',
+            args: ['serve']
+          }
+        }
+      }),
+      'utf8'
+    );
+
+    const result = await installHook('claude', 'O:\\w_Isaland\\scripts\\vibe-island-hook.mjs', home);
+    const installed = JSON.parse(await readFile(desktopConfigPath, 'utf8'));
+
+    expect(result.configPath).toBe(desktopConfigPath);
+    expect(installed.deploymentMode).toBe('3p');
+    expect(installed.mcpServers.gbrain.command).toBe('O:/CCTest/tools/gbrain.cmd');
+    expect(JSON.stringify(installed).match(/vibe-island-hook/g)?.length).toBe(5);
+    expect(existsSync(legacySettingsPath)).toBe(false);
   });
 });

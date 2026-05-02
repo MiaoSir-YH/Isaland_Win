@@ -16,7 +16,6 @@ import {
   Settings,
   ShieldAlert,
   Terminal,
-  X
 } from 'lucide-react';
 import type {
   AgentDescriptor,
@@ -25,8 +24,7 @@ import type {
   AppConfig,
   AppSnapshot,
   NormalizedEvent,
-  PermissionRequest,
-  PermissionDecision
+  PermissionRequest
 } from '@shared/types';
 import { getIslandAttentionReason, type IslandAttentionReason } from '@shared/attention';
 import './styles.css';
@@ -62,13 +60,14 @@ function App(): JSX.Element {
 function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
   const [expanded, setExpanded] = useState(false);
   const cardRef = useRef<HTMLElement | null>(null);
+  const barRef = useRef<HTMLButtonElement | null>(null);
   const active = snapshot.sessions[0];
   const notification = snapshot.notification;
   const permission = snapshot.permissions[0];
   const tone = getIslandTone(permission, notification, active);
   const workspaceLabel = active?.title ?? (notification?.workspace ? getWorkspaceName(notification.workspace) : undefined);
   const primaryText = permission ? permission.action : notification?.title ?? workspaceLabel ?? 'Vibe Island';
-  const secondaryText = permission ? '等待确认' : notification?.message ?? formatSessionSummary(active);
+  const secondaryText = permission ? '需要权限' : notification?.message ?? formatSessionSummary(active);
   const islandWidth = estimateIslandWidth(primaryText, secondaryText);
   const textKey = permission?.id ?? notification?.id ?? `${primaryText}:${secondaryText}`;
 
@@ -81,7 +80,7 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
 
   const syncHoverAfterCollapse = useCallback(() => {
     window.setTimeout(() => {
-      void window.vibeIsland.setIslandHovered(isPointerInsideCard(cardRef.current));
+      void window.vibeIsland.setIslandHovered(isPointerInsideElement(barRef.current));
     }, 0);
   }, []);
 
@@ -125,7 +124,7 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
 
   function handlePointerMove(event: React.PointerEvent<HTMLElement>): void {
     if (expanded) return;
-    void window.vibeIsland.setIslandHovered(isPointerInsideCard(cardRef.current, event.clientX, event.clientY));
+    void window.vibeIsland.setIslandHovered(isPointerInsideElement(barRef.current, event.clientX, event.clientY));
   }
 
   return (
@@ -136,11 +135,14 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
           className={`island-card ${expanded ? 'expanded' : 'collapsed'} tone-${tone}`}
           animate={{ width: islandWidth }}
           transition={{ type: 'spring', stiffness: 520, damping: 46, mass: 0.82 }}
-          onMouseEnter={() => window.vibeIsland.setIslandHovered(true)}
+          onMouseEnter={(event) =>
+            window.vibeIsland.setIslandHovered(isPointerInsideElement(barRef.current, event.clientX, event.clientY))
+          }
           onMouseLeave={() => window.vibeIsland.setIslandHovered(false)}
           onPointerMove={handlePointerMove}
         >
           <motion.button
+            ref={barRef}
             className="island-bar"
             type="button"
             onClick={toggleExpanded}
@@ -153,6 +155,12 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
             {expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
             {tone === 'completed' ? <span className="completion-progress" aria-hidden="true" /> : null}
           </motion.button>
+
+          <AnimatePresence initial={false}>
+            {permission && !expanded ? (
+              <PermissionNotice request={permission} key={permission.id} />
+            ) : null}
+          </AnimatePresence>
 
           <AnimatePresence initial={false}>
             {expanded ? (
@@ -192,9 +200,34 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
   );
 }
 
-function isPointerInsideCard(card: HTMLElement | null, x?: number, y?: number): boolean {
-  if (!card) return false;
-  const rect = card.getBoundingClientRect();
+function PermissionNotice({ request }: { request: PermissionRequest }): JSX.Element {
+  return (
+    <motion.section
+      className={`permission-notice risk-${request.risk}`}
+      aria-label="需要权限提示"
+      initial={{ opacity: 0, height: 0, y: -10 }}
+      animate={{ opacity: 1, height: 'auto', y: 0 }}
+      exit={{ opacity: 0, height: 0, y: -10 }}
+      transition={{ type: 'spring', stiffness: 560, damping: 42, mass: 0.76 }}
+    >
+      <div className="notice-signal" aria-hidden="true" />
+      <div className="notice-copy">
+        <div className="notice-title">
+          <ShieldAlert size={14} />
+          <span>需要权限</span>
+          <strong>{agentLabels[request.agent]}</strong>
+          <em>{formatRisk(request.risk)}</em>
+        </div>
+        <p>{request.action}</p>
+        {request.command ? <code>{request.command}</code> : null}
+      </div>
+    </motion.section>
+  );
+}
+
+function isPointerInsideElement(element: HTMLElement | null, x?: number, y?: number): boolean {
+  if (!element) return false;
+  const rect = element.getBoundingClientRect();
   const pointX = x ?? window.innerWidth / 2;
   const pointY = y ?? 22;
   return pointX >= rect.left && pointX <= rect.right && pointY >= rect.top && pointY <= rect.bottom;
@@ -289,36 +322,26 @@ function formatSessionSummary(session: AgentSession | undefined): string {
 }
 
 function PermissionPanel({ request }: { request: PermissionRequest }): JSX.Element {
-  async function respond(decision: PermissionDecision): Promise<void> {
-    await window.vibeIsland.respondPermission({
-      id: request.id,
-      decision,
-      decidedAt: new Date().toISOString()
-    });
-  }
-
   return (
     <section className={`permission-panel risk-${request.risk}`} aria-label="权限请求">
       <div>
-        <div className="section-kicker">{agentLabels[request.agent]} 权限请求</div>
+        <div className="section-kicker">{agentLabels[request.agent]} 需要权限</div>
         <h2>{request.action}</h2>
         {request.command ? <code>{request.command}</code> : null}
       </div>
-      <div className="permission-actions">
-        <button className="decision allow" type="button" onClick={() => respond('allow')}>
-          <Check size={16} />
-          允许
-        </button>
-        <button className="decision deny" type="button" onClick={() => respond('deny')}>
-          <X size={16} />
-          拒绝
-        </button>
-        <button className="decision muted" type="button" onClick={() => respond('denyForSession')}>
-          本会话拒绝
-        </button>
+      <div className="permission-readonly">
+        <ShieldAlert size={15} />
+        <span>仅提示，不执行审批操作；提示超时后返回 timeout。</span>
+        <strong>{formatRisk(request.risk)}</strong>
       </div>
     </section>
   );
+}
+
+function formatRisk(risk: PermissionRequest['risk']): string {
+  if (risk === 'high') return '高风险';
+  if (risk === 'medium') return '中风险';
+  return '低风险';
 }
 
 function SessionStrip({ sessions }: { sessions: AgentSession[] }): JSX.Element {

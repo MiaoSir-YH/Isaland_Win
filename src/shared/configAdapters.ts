@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import type { AgentDescriptor, AgentId, HookInstallResult } from './types';
 
 const MANAGED_MARKER = 'managed-by-vibe-island';
@@ -28,10 +28,11 @@ const ADAPTERS: AdapterSpec[] = [
   },
   {
     agent: 'claude',
-    name: 'Claude Code',
-    configPath: (home) => join(home, '.claude', 'settings.json'),
+    name: 'Claude Desktop / Code',
+    configPath: resolveClaudeConfigPath,
     commandCandidates: ['claude'],
-    events: ['PreToolUse', 'PostToolUse', 'Notification', 'Stop', 'UserPromptSubmit']
+    events: ['PreToolUse', 'PostToolUse', 'Notification', 'Stop', 'UserPromptSubmit'],
+    note: 'Claude Desktop 3p config is preferred when AppData\\Local\\Claude-3p is present; otherwise Vibe Island falls back to ~/.claude/settings.json.'
   },
   {
     agent: 'gemini',
@@ -132,6 +133,12 @@ export function buildHelperCommand(helperPath: string, agent: AgentId, event: st
   return `node "${escapedPath}" --agent ${agent} --event ${event} --managed-by ${MANAGED_MARKER}`;
 }
 
+function resolveClaudeConfigPath(home: string): string {
+  const desktopDir = join(home, 'AppData', 'Local', 'Claude-3p');
+  if (existsSync(desktopDir)) return join(desktopDir, 'claude_desktop_config.json');
+  return join(home, '.claude', 'settings.json');
+}
+
 function makeClaudeStyleHook(helperCommand: string, agent: AgentId, event: string): Record<string, unknown> {
   return {
     matcher: '',
@@ -217,6 +224,9 @@ function requireAdapter(agent: AgentId): AdapterSpec {
 function findCommand(candidates: string[]): string | undefined {
   const pathEnv = process.env.PATH ?? '';
   const extensions = process.platform === 'win32' ? ['.exe', '.cmd', '.ps1', '.bat', ''] : [''];
+  for (const candidate of candidates) {
+    if (isAbsolute(candidate) && existsSync(candidate)) return candidate;
+  }
   for (const directory of pathEnv.split(process.platform === 'win32' ? ';' : ':')) {
     for (const candidate of candidates) {
       for (const ext of extensions) {

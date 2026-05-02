@@ -1,5 +1,7 @@
 import type { PermissionResponse } from './types';
 
+export const PERMISSION_NOTICE_MAX_TIMEOUT_MS = 8000;
+
 export function createPermissionTimeoutResponse(id: string, now = new Date()): PermissionResponse {
   return {
     id,
@@ -8,3 +10,6 @@ export function createPermissionTimeoutResponse(id: string, now = new Date()): P
   };
 }
 
+export function getPermissionNoticeTimeoutMs(timeoutMs: number): number {
+  return Math.max(0, Math.min(timeoutMs, PERMISSION_NOTICE_MAX_TIMEOUT_MS));
+}
