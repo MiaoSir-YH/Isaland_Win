@@ -132,6 +132,7 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
   const previousPermissionIdRef = useRef<string | undefined>(undefined);
   const previousNotificationIdRef = useRef<string | null>(null);
   const lastActivityAtRef = useRef(Date.now());
+  const interactionHoldRef = useRef(false);
   const [contentChanging, setContentChanging] = useState(false);
   const active = snapshot.sessions[0];
   const notification = snapshot.notification;
@@ -183,7 +184,7 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
 
   const resetAutoCollapseTimer = useCallback(() => {
     clearAutoCollapseTimer();
-    if (!expanded) return;
+    if (!expanded || interactionHoldRef.current) return;
     autoCollapseTimerRef.current = window.setTimeout(() => {
       void requestCollapse('auto-idle');
     }, ISLAND_AUTO_COLLAPSE_IDLE_MS);
@@ -193,6 +194,19 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
     lastActivityAtRef.current = Date.now();
     resetAutoCollapseTimer();
   }, [resetAutoCollapseTimer]);
+
+  const setInteractionHold = useCallback(
+    (held: boolean) => {
+      interactionHoldRef.current = held;
+      lastActivityAtRef.current = Date.now();
+      if (held) {
+        clearAutoCollapseTimer();
+        return;
+      }
+      resetAutoCollapseTimer();
+    },
+    [clearAutoCollapseTimer, resetAutoCollapseTimer]
+  );
 
   useEffect(() => {
     const unsubscribe = window.vibeIsland.onExpanded((next) => {
@@ -332,6 +346,7 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
       previousNotificationId &&
       !notificationId &&
       expanded &&
+      !interactionHoldRef.current &&
       Date.now() - lastActivityAtRef.current >= ISLAND_AUTO_COLLAPSE_IDLE_MS
     ) {
       void requestCollapse('notification-clear');
@@ -392,12 +407,19 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
           animate={{ width: islandCardWidth }}
           transition={islandMotion.widthSpring}
           onMouseEnter={(event) => {
-            markIslandActivity();
+            setInteractionHold(true);
             void window.vibeIsland.setIslandHovered(isPointerInsideElement(barRef.current, event.clientX, event.clientY));
           }}
-          onMouseLeave={() => window.vibeIsland.setIslandHovered(false)}
+          onMouseLeave={() => {
+            setInteractionHold(false);
+            void window.vibeIsland.setIslandHovered(false);
+          }}
           onPointerDownCapture={() => markIslandActivity()}
-          onFocusCapture={() => markIslandActivity()}
+          onFocusCapture={() => setInteractionHold(true)}
+          onBlurCapture={(event) => {
+            if (cardRef.current?.contains(event.relatedTarget)) return;
+            setInteractionHold(false);
+          }}
           onPointerMove={handlePointerMove}
         >
           <motion.button
