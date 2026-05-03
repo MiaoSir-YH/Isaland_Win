@@ -46,6 +46,17 @@ const ISLAND_PANEL_CANVAS_HEIGHT = 372;
 const ISLAND_LAYOUT_SHRINK_DELAY_MS = 260;
 const ISLAND_COLLAPSE_STATE_MS = 240;
 const ISLAND_CONTENT_PULSE_MS = 380;
+const ISLAND_AUTO_COLLAPSE_IDLE_MS = 8000;
+
+type CollapseReason =
+  | 'manual-toggle'
+  | 'outside-pointer'
+  | 'window-blur'
+  | 'settings'
+  | 'auto-idle'
+  | 'permission-start'
+  | 'notification-clear'
+  | 'escape';
 
 const islandMotion = {
   micro: { duration: 0.12, ease: [0.16, 1, 0.3, 1] },
@@ -115,8 +126,12 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
   const islandLayoutRef = useRef({ width: ISLAND_CANVAS_WIDTH, height: ISLAND_BAR_CANVAS_HEIGHT });
   const layoutTimerRef = useRef<number | null>(null);
   const collapseTimerRef = useRef<number | null>(null);
+  const autoCollapseTimerRef = useRef<number | null>(null);
   const contentPulseTimerRef = useRef<number | null>(null);
   const previousTextKeyRef = useRef<string | null>(null);
+  const previousPermissionIdRef = useRef<string | undefined>(undefined);
+  const previousNotificationIdRef = useRef<string | null>(null);
+  const lastActivityAtRef = useRef(Date.now());
   const [contentChanging, setContentChanging] = useState(false);
   const active = snapshot.sessions[0];
   const notification = snapshot.notification;
@@ -142,10 +157,52 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
     }, ISLAND_COLLAPSE_STATE_MS);
   }, []);
 
+  const clearAutoCollapseTimer = useCallback(() => {
+    if (autoCollapseTimerRef.current) {
+      window.clearTimeout(autoCollapseTimerRef.current);
+      autoCollapseTimerRef.current = null;
+    }
+  }, []);
+
+  const syncHoverAfterCollapse = useCallback(() => {
+    window.setTimeout(() => {
+      void window.vibeIsland.setIslandHovered(isPointerInsideElement(barRef.current));
+    }, 0);
+  }, []);
+
+  const requestCollapse = useCallback(
+    async (_reason: CollapseReason) => {
+      clearAutoCollapseTimer();
+      if (expanded) beginCollapseState();
+      setExpanded(false);
+      await window.vibeIsland.setExpanded(false);
+      syncHoverAfterCollapse();
+    },
+    [beginCollapseState, clearAutoCollapseTimer, expanded, syncHoverAfterCollapse]
+  );
+
+  const resetAutoCollapseTimer = useCallback(() => {
+    clearAutoCollapseTimer();
+    if (!expanded) return;
+    autoCollapseTimerRef.current = window.setTimeout(() => {
+      void requestCollapse('auto-idle');
+    }, ISLAND_AUTO_COLLAPSE_IDLE_MS);
+  }, [clearAutoCollapseTimer, expanded, requestCollapse]);
+
+  const markIslandActivity = useCallback(() => {
+    lastActivityAtRef.current = Date.now();
+    resetAutoCollapseTimer();
+  }, [resetAutoCollapseTimer]);
+
   useEffect(() => {
     const unsubscribe = window.vibeIsland.onExpanded((next) => {
+      if (!next) {
+        clearAutoCollapseTimer();
+        syncHoverAfterCollapse();
+      }
       setExpanded((previous) => {
         if (next) {
+          lastActivityAtRef.current = Date.now();
           setCollapsing(false);
           if (collapseTimerRef.current) {
             window.clearTimeout(collapseTimerRef.current);
@@ -158,11 +215,13 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
       });
     });
     return unsubscribe;
-  }, [beginCollapseState]);
+  }, [beginCollapseState, clearAutoCollapseTimer, syncHoverAfterCollapse]);
 
   useEffect(() => {
     return () => {
       if (collapseTimerRef.current) window.clearTimeout(collapseTimerRef.current);
+      if (layoutTimerRef.current) window.clearTimeout(layoutTimerRef.current);
+      if (autoCollapseTimerRef.current) window.clearTimeout(autoCollapseTimerRef.current);
       if (contentPulseTimerRef.current) window.clearTimeout(contentPulseTimerRef.current);
     };
   }, []);
@@ -215,18 +274,16 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
     };
   }, [islandLayout.width, islandLayout.height]);
 
-  const syncHoverAfterCollapse = useCallback(() => {
-    window.setTimeout(() => {
-      void window.vibeIsland.setIslandHovered(isPointerInsideElement(barRef.current));
-    }, 0);
-  }, []);
+  useEffect(() => {
+    if (!expanded) {
+      clearAutoCollapseTimer();
+      return undefined;
+    }
 
-  const collapsePanel = useCallback(async () => {
-    setExpanded(false);
-    beginCollapseState();
-    await window.vibeIsland.setExpanded(false);
-    syncHoverAfterCollapse();
-  }, [beginCollapseState, syncHoverAfterCollapse]);
+    lastActivityAtRef.current = Date.now();
+    resetAutoCollapseTimer();
+    return clearAutoCollapseTimer;
+  }, [clearAutoCollapseTimer, expanded, resetAutoCollapseTimer]);
 
   useEffect(() => {
     if (!expanded) return undefined;
@@ -235,27 +292,61 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
       const target = event.target;
       if (!(target instanceof Node)) return;
       if (cardRef.current?.contains(target)) return;
-      void collapsePanel();
+      void requestCollapse('outside-pointer');
     }
 
     function handleWindowBlur(): void {
-      void collapsePanel();
+      void requestCollapse('window-blur');
+    }
+
+    function handleKeyDown(event: KeyboardEvent): void {
+      if (event.key === 'Escape') {
+        void requestCollapse('escape');
+        return;
+      }
+      markIslandActivity();
     }
 
     window.addEventListener('pointerdown', handlePointerDown, true);
     window.addEventListener('blur', handleWindowBlur);
+    window.addEventListener('keydown', handleKeyDown);
     return () => {
       window.removeEventListener('pointerdown', handlePointerDown, true);
       window.removeEventListener('blur', handleWindowBlur);
+      window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [collapsePanel, expanded]);
+  }, [expanded, markIslandActivity, requestCollapse]);
+
+  useEffect(() => {
+    const permissionId = permission?.id;
+    if (permissionId && previousPermissionIdRef.current !== permissionId) {
+      void requestCollapse('permission-start');
+    }
+    previousPermissionIdRef.current = permissionId;
+  }, [permission?.id, requestCollapse]);
+
+  useEffect(() => {
+    const notificationId = notification?.id ?? null;
+    const previousNotificationId = previousNotificationIdRef.current;
+    if (
+      previousNotificationId &&
+      !notificationId &&
+      expanded &&
+      Date.now() - lastActivityAtRef.current >= ISLAND_AUTO_COLLAPSE_IDLE_MS
+    ) {
+      void requestCollapse('notification-clear');
+    }
+    previousNotificationIdRef.current = notificationId;
+  }, [expanded, notification?.id, requestCollapse]);
 
   async function toggleExpanded(): Promise<void> {
     const next = !expanded;
     if (!next) {
-      await collapsePanel();
+      await requestCollapse('manual-toggle');
       return;
     }
+    clearAutoCollapseTimer();
+    lastActivityAtRef.current = Date.now();
     setExpanded(next);
     setCollapsing(false);
     if (collapseTimerRef.current) {
@@ -266,6 +357,7 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
   }
 
   async function openSettingsFromIsland(): Promise<void> {
+    await requestCollapse('settings');
     await window.vibeIsland.openSettings();
   }
 
@@ -282,7 +374,10 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
   }
 
   function handlePointerMove(event: React.PointerEvent<HTMLElement>): void {
-    if (expanded) return;
+    if (expanded) {
+      markIslandActivity();
+      return;
+    }
     void window.vibeIsland.setIslandHovered(isPointerInsideElement(barRef.current, event.clientX, event.clientY));
   }
 
@@ -296,10 +391,13 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
           } state-${animationState} tone-${tone}`}
           animate={{ width: islandCardWidth }}
           transition={islandMotion.widthSpring}
-          onMouseEnter={(event) =>
-            window.vibeIsland.setIslandHovered(isPointerInsideElement(barRef.current, event.clientX, event.clientY))
-          }
+          onMouseEnter={(event) => {
+            markIslandActivity();
+            void window.vibeIsland.setIslandHovered(isPointerInsideElement(barRef.current, event.clientX, event.clientY));
+          }}
           onMouseLeave={() => window.vibeIsland.setIslandHovered(false)}
+          onPointerDownCapture={() => markIslandActivity()}
+          onFocusCapture={() => markIslandActivity()}
           onPointerMove={handlePointerMove}
         >
           <motion.button

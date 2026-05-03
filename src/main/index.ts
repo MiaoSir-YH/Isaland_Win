@@ -246,6 +246,7 @@ function positionIsland(): void {
 function setIslandExpanded(expanded: boolean): void {
   if (!islandWindow || islandWindow.isDestroyed()) return;
   islandExpanded = expanded;
+  if (!expanded) islandHovered = false;
   if (expanded) setIslandLayout(ISLAND_EXPANDED_SIZE);
   positionIsland();
   updateIslandMouseInteractivity();
