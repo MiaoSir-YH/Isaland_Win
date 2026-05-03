@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -15,6 +15,13 @@ afterEach(async () => {
 });
 
 describe('hook helper fallback', () => {
+  it('does not wait forever when hook stdin stays open', async () => {
+    const result = await runHookWithOpenStdin(['--agent', 'codex', '--event', 'UserPromptSubmit'], 1200);
+
+    expect(result.timedOut).toBe(false);
+    expect(result.code).toBe(0);
+  });
+
   it('spools unavailable permission requests and does not approve', async () => {
     const result = await runHook(
       JSON.stringify({
@@ -35,6 +42,45 @@ describe('hook helper fallback', () => {
     expect(spool).not.toContain('approve');
   });
 });
+
+function runHookWithOpenStdin(
+  args: string[],
+  timeoutMs: number
+): Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }> {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, ['scripts/vibe-island-hook.mjs', ...args], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        APPDATA: appData
+      },
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const timer = setTimeout(() => {
+      settled = true;
+      child.kill();
+      resolve({ code: null, stdout, stderr, timedOut: true });
+    }, timeoutMs);
+
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+    });
+    child.on('exit', (code) => {
+      if (settled) return;
+      clearTimeout(timer);
+      settled = true;
+      resolve({ code, stdout, stderr, timedOut: false });
+    });
+  });
+}
 
 function runHook(input: string, args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
@@ -63,4 +109,3 @@ function runHook(input: string, args: string[]): Promise<{ code: number | null; 
     child.stdin?.end(input);
   });
 }
-

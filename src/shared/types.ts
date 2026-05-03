@@ -17,6 +17,8 @@ export type Severity = 'info' | 'success' | 'warning' | 'error';
 
 export type PermissionDecision = 'allow' | 'deny' | 'denyForSession' | 'timeout';
 export type NotificationStrategy = 'focused' | 'realtime' | 'silent';
+export type AppearanceTheme = 'system' | 'light' | 'dark';
+export type AccentTheme = 'teal' | 'blue' | 'violet' | 'orange' | 'graphite';
 
 export interface NormalizedEvent {
   schemaVersion: 1;
@@ -78,7 +80,8 @@ export interface AgentDescriptor {
 }
 
 export interface AppConfig {
-  theme: 'system' | 'light' | 'dark';
+  theme: AppearanceTheme;
+  accentTheme: AccentTheme;
   language: 'zh-CN' | 'en-US';
   startAtLogin: boolean;
   notifications: boolean;
@@ -117,6 +120,7 @@ export interface HookInstallResult {
 
 export const DEFAULT_CONFIG: AppConfig = {
   theme: 'system',
+  accentTheme: 'teal',
   language: 'zh-CN',
   startAtLogin: false,
   notifications: true,

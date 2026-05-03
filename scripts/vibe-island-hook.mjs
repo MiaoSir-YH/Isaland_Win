@@ -8,6 +8,7 @@ const appData = process.env.APPDATA ?? join(process.env.USERPROFILE ?? process.c
 const dataDir = join(appData, 'Vibe Island');
 const runtimePath = join(dataDir, 'runtime.json');
 const spoolPath = join(dataDir, 'spool.jsonl');
+const STDIN_IDLE_TIMEOUT_MS = 250;
 
 const stdin = await readStdin();
 const payload = parsePayload(stdin);
@@ -81,13 +82,43 @@ function parsePayload(text) {
 function readStdin() {
   return new Promise((resolve, reject) => {
     let data = '';
-    process.stdin.setEncoding('utf8');
-    process.stdin.on('data', (chunk) => {
+    let settled = false;
+    let idleTimer;
+    const settle = (value) => {
+      if (settled) return;
+      settled = true;
+      if (idleTimer) clearTimeout(idleTimer);
+      process.stdin.off('data', onData);
+      process.stdin.off('end', onEnd);
+      process.stdin.off('error', onError);
+      resolve(value);
+    };
+    const armIdleTimer = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => settle(data), STDIN_IDLE_TIMEOUT_MS);
+      idleTimer.unref?.();
+    };
+    const onData = (chunk) => {
       data += chunk;
-    });
-    process.stdin.on('end', () => resolve(data));
-    process.stdin.on('error', reject);
-    if (process.stdin.isTTY) resolve('');
+      armIdleTimer();
+    };
+    const onEnd = () => settle(data);
+    const onError = (error) => {
+      if (settled) return;
+      settled = true;
+      if (idleTimer) clearTimeout(idleTimer);
+      reject(error);
+    };
+
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', onData);
+    process.stdin.on('end', onEnd);
+    process.stdin.on('error', onError);
+    if (process.stdin.isTTY) {
+      settle('');
+    } else {
+      armIdleTimer();
+    }
   });
 }
 
@@ -107,4 +138,3 @@ function parseArgs(values) {
   }
   return parsed;
 }
-

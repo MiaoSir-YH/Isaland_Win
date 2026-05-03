@@ -49,11 +49,19 @@ let codexReplyWatcher: CodexReplyWatcher | null = null;
 let state: IslandState;
 let islandExpanded = false;
 let islandHovered = false;
+let settingsManuallyMaximized = false;
+let settingsRestoreBounds: Electron.Rectangle | null = null;
+let settingsDragOffset: { x: number; y: number } | null = null;
+let settingsDragBounds: Electron.Rectangle | null = null;
+let settingsDragTimer: NodeJS.Timeout | null = null;
 let notificationClearTimer: NodeJS.Timeout | null = null;
 const eventDeduper = new EventDeduper();
-const ISLAND_COLLAPSED_SIZE = { width: 320, height: 44 };
-const ISLAND_EXPANDED_SIZE = { width: 520, height: 360 };
-const ISLAND_TOP_OFFSET = 10;
+const ISLAND_COLLAPSED_SIZE = { width: 560, height: 68 };
+const ISLAND_EXPANDED_SIZE = { width: 560, height: 372 };
+const ISLAND_TOP_OFFSET = 4;
+const SETTINGS_NORMAL_SIZE = { width: 1100, height: 760 };
+const SETTINGS_MIN_SIZE = { width: 940, height: 660 };
+let islandLayoutSize = { ...ISLAND_COLLAPSED_SIZE };
 
 const permissionWaiters = new Map<
   string,
@@ -143,10 +151,10 @@ app.on('before-quit', () => {
 
 function createIslandWindow(): void {
   islandWindow = new BrowserWindow({
-    width: ISLAND_EXPANDED_SIZE.width,
-    height: ISLAND_EXPANDED_SIZE.height,
-    minWidth: ISLAND_EXPANDED_SIZE.width,
-    minHeight: ISLAND_EXPANDED_SIZE.height,
+    width: ISLAND_COLLAPSED_SIZE.width,
+    height: ISLAND_COLLAPSED_SIZE.height,
+    minWidth: ISLAND_COLLAPSED_SIZE.width,
+    minHeight: ISLAND_COLLAPSED_SIZE.height,
     frame: false,
     transparent: true,
     resizable: false,
@@ -164,6 +172,7 @@ function createIslandWindow(): void {
     }
   });
 
+  islandWindow.setBackgroundColor('#00000000');
   islandWindow.setAlwaysOnTop(true, 'screen-saver');
   islandWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   updateIslandMouseInteractivity();
@@ -183,13 +192,15 @@ function createIslandWindow(): void {
 function createSettingsWindow(): BrowserWindow {
   if (settingsWindow && !settingsWindow.isDestroyed()) return settingsWindow;
   settingsWindow = new BrowserWindow({
-    width: 920,
-    height: 720,
-    minWidth: 820,
-    minHeight: 620,
+    width: 1100,
+    height: 760,
+    minWidth: 940,
+    minHeight: 660,
     show: false,
+    frame: false,
+    transparent: true,
     autoHideMenuBar: true,
-    backgroundColor: '#f8fafc',
+    backgroundColor: '#00000000',
     title: 'Vibe Island 设置',
     webPreferences: {
       preload: join(__dirname, '../preload/index.mjs'),
@@ -198,10 +209,22 @@ function createSettingsWindow(): BrowserWindow {
       sandbox: false
     }
   });
+  settingsWindow.setBackgroundColor('#00000000');
   settingsWindow.setMenu(null);
   settingsWindow.setMenuBarVisibility(false);
+  settingsWindow.on('ready-to-show', () => {
+    presentSettingsWindow(settingsWindow);
+  });
+  settingsWindow.on('maximize', () => emitSettingsWindowState());
+  settingsWindow.on('unmaximize', () => emitSettingsWindowState());
+  settingsWindow.on('restore', () => emitSettingsWindowState());
   settingsWindow.on('closed', () => {
     settingsWindow = null;
+    settingsManuallyMaximized = false;
+    settingsRestoreBounds = null;
+    settingsDragOffset = null;
+    settingsDragBounds = null;
+    stopSettingsWindowDragLoop();
   });
   loadRenderer(settingsWindow, 'settings');
   return settingsWindow;
@@ -223,9 +246,21 @@ function positionIsland(): void {
 function setIslandExpanded(expanded: boolean): void {
   if (!islandWindow || islandWindow.isDestroyed()) return;
   islandExpanded = expanded;
+  if (expanded) setIslandLayout(ISLAND_EXPANDED_SIZE);
   positionIsland();
   updateIslandMouseInteractivity();
   islandWindow.webContents.send('island:expanded', expanded);
+}
+
+function setIslandLayout(size: { width: number; height: number }): void {
+  if (!islandWindow || islandWindow.isDestroyed()) return;
+  const next = {
+    width: ISLAND_EXPANDED_SIZE.width,
+    height: clamp(Math.round(size.height), ISLAND_COLLAPSED_SIZE.height, ISLAND_EXPANDED_SIZE.height)
+  };
+  if (next.width === islandLayoutSize.width && next.height === islandLayoutSize.height) return;
+  islandLayoutSize = next;
+  positionIsland();
 }
 
 function updateIslandMouseInteractivity(): void {
@@ -236,11 +271,15 @@ function updateIslandMouseInteractivity(): void {
 function getIslandCanvasBounds(): Electron.Rectangle {
   const display = screen.getPrimaryDisplay();
   return {
-    width: ISLAND_EXPANDED_SIZE.width,
-    height: ISLAND_EXPANDED_SIZE.height,
-    x: Math.round(display.workArea.x + (display.workArea.width - ISLAND_EXPANDED_SIZE.width) / 2),
+    width: islandLayoutSize.width,
+    height: islandLayoutSize.height,
+    x: Math.round(display.workArea.x + (display.workArea.width - islandLayoutSize.width) / 2),
     y: Math.round(display.workArea.y + ISLAND_TOP_OFFSET)
   };
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }
 
 function createTray(): void {
@@ -272,8 +311,177 @@ function showIsland(): void {
 
 function openSettings(): void {
   const window = createSettingsWindow();
-  window.show();
+  presentSettingsWindow(window);
+  if (islandExpanded) {
+    islandHovered = false;
+    setIslandExpanded(false);
+  }
+}
+
+function presentSettingsWindow(window: BrowserWindow | null): void {
+  if (!window || window.isDestroyed()) return;
+  if (window.isMinimized()) window.restore();
+  if (!window.isVisible()) window.show();
+  window.moveTop();
   window.focus();
+  window.setAlwaysOnTop(true);
+  window.setAlwaysOnTop(false);
+  emitSettingsWindowState();
+}
+
+function getSettingsWindowState(): { maximized: boolean } {
+  return {
+    maximized: Boolean(
+      settingsWindow && !settingsWindow.isDestroyed() && (settingsManuallyMaximized || settingsWindow.isMaximized())
+    )
+  };
+}
+
+function emitSettingsWindowState(): void {
+  if (!settingsWindow || settingsWindow.isDestroyed()) return;
+  settingsWindow.webContents.send('window:settings-state', getSettingsWindowState());
+}
+
+function controlSettingsWindow(action: 'close' | 'minimize' | 'zoom'): { maximized: boolean } {
+  if (!settingsWindow || settingsWindow.isDestroyed()) return { maximized: false };
+  if (action === 'close') {
+    settingsWindow.close();
+    return { maximized: false };
+  }
+  if (action === 'minimize') {
+    settingsWindow.minimize();
+    return getSettingsWindowState();
+  }
+  if (settingsManuallyMaximized || settingsWindow.isMaximized()) {
+    restoreSettingsWindow();
+  } else {
+    maximizeSettingsWindowToWorkArea();
+  }
+  emitSettingsWindowState();
+  return getSettingsWindowState();
+}
+
+function beginSettingsWindowDrag(point: { screenX: number; screenY: number; clientX: number; clientY: number }): {
+  maximized: boolean;
+} {
+  if (!settingsWindow || settingsWindow.isDestroyed()) return { maximized: false };
+  if (!(settingsManuallyMaximized || settingsWindow.isMaximized())) return getSettingsWindowState();
+
+  const restoreBounds = getSafeSettingsRestoreBounds(settingsRestoreBounds ?? undefined);
+  const currentBounds = settingsWindow.getBounds();
+  const offsetX = clamp(
+    Math.round((point.clientX / Math.max(1, currentBounds.width)) * restoreBounds.width),
+    96,
+    Math.max(96, restoreBounds.width - 96)
+  );
+  const offsetY = clamp(Math.round(point.clientY), 18, 72);
+
+  settingsManuallyMaximized = false;
+  settingsRestoreBounds = null;
+  settingsDragOffset = { x: offsetX, y: offsetY };
+  settingsDragBounds = {
+    ...restoreBounds,
+    x: Math.round(point.screenX - offsetX),
+    y: Math.round(point.screenY - offsetY)
+  };
+  if (settingsWindow.isMaximized()) settingsWindow.unmaximize();
+  settingsWindow.setBounds(settingsDragBounds, false);
+  startSettingsWindowDragLoop();
+  emitSettingsWindowState();
+  return getSettingsWindowState();
+}
+
+function moveSettingsWindowDrag(point: { screenX: number; screenY: number }): void {
+  if (!settingsWindow || settingsWindow.isDestroyed() || !settingsDragOffset || !settingsDragBounds) return;
+  settingsDragBounds = {
+    ...settingsDragBounds,
+    x: Math.round(point.screenX - settingsDragOffset.x),
+    y: Math.round(point.screenY - settingsDragOffset.y)
+  };
+  settingsWindow.setBounds(settingsDragBounds, false);
+}
+
+function endSettingsWindowDrag(): void {
+  settingsDragOffset = null;
+  settingsDragBounds = null;
+  stopSettingsWindowDragLoop();
+}
+
+function startSettingsWindowDragLoop(): void {
+  stopSettingsWindowDragLoop();
+  settingsDragTimer = setInterval(updateSettingsWindowDragPosition, 16);
+  settingsDragTimer.unref?.();
+}
+
+function stopSettingsWindowDragLoop(): void {
+  if (!settingsDragTimer) return;
+  clearInterval(settingsDragTimer);
+  settingsDragTimer = null;
+}
+
+function updateSettingsWindowDragPosition(): void {
+  if (!settingsWindow || settingsWindow.isDestroyed() || !settingsDragOffset || !settingsDragBounds) {
+    stopSettingsWindowDragLoop();
+    return;
+  }
+  const cursor = screen.getCursorScreenPoint();
+  const nextX = Math.round(cursor.x - settingsDragOffset.x);
+  const nextY = Math.round(cursor.y - settingsDragOffset.y);
+  if (nextX === settingsDragBounds.x && nextY === settingsDragBounds.y) return;
+  settingsDragBounds = {
+    ...settingsDragBounds,
+    x: nextX,
+    y: nextY
+  };
+  settingsWindow.setBounds(settingsDragBounds, false);
+}
+
+function maximizeSettingsWindowToWorkArea(): void {
+  if (!settingsWindow || settingsWindow.isDestroyed()) return;
+  const currentBounds = settingsWindow.getBounds();
+  const display = screen.getDisplayMatching(currentBounds);
+  if (!isSameBounds(currentBounds, display.workArea)) {
+    settingsRestoreBounds = getSafeSettingsRestoreBounds(currentBounds);
+  }
+  settingsManuallyMaximized = true;
+  if (settingsWindow.isMaximized()) settingsWindow.unmaximize();
+  settingsWindow.setBounds(display.workArea, true);
+}
+
+function restoreSettingsWindow(): void {
+  if (!settingsWindow || settingsWindow.isDestroyed()) return;
+  if (settingsWindow.isMaximized()) settingsWindow.unmaximize();
+  settingsManuallyMaximized = false;
+  if (settingsRestoreBounds) {
+    settingsWindow.setBounds(getSafeSettingsRestoreBounds(settingsRestoreBounds), true);
+  }
+  settingsRestoreBounds = null;
+}
+
+function isSameBounds(a: Electron.Rectangle, b: Electron.Rectangle): boolean {
+  return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
+}
+
+function getSafeSettingsRestoreBounds(preferred?: Electron.Rectangle): Electron.Rectangle {
+  const reference = preferred ?? settingsWindow?.getBounds() ?? screen.getPrimaryDisplay().workArea;
+  const display = screen.getDisplayMatching(reference);
+  const maxWidth = Math.max(520, Math.min(SETTINGS_NORMAL_SIZE.width, display.workArea.width - 96));
+  const maxHeight = Math.max(420, Math.min(SETTINGS_NORMAL_SIZE.height, display.workArea.height - 96));
+  const minWidth = Math.min(SETTINGS_MIN_SIZE.width, maxWidth);
+  const minHeight = Math.min(SETTINGS_MIN_SIZE.height, maxHeight);
+  const width = clamp(Math.round(preferred?.width ?? SETTINGS_NORMAL_SIZE.width), minWidth, maxWidth);
+  const height = clamp(Math.round(preferred?.height ?? SETTINGS_NORMAL_SIZE.height), minHeight, maxHeight);
+  const x = clamp(
+    Math.round(preferred?.x ?? display.workArea.x + (display.workArea.width - width) / 2),
+    display.workArea.x,
+    display.workArea.x + Math.max(0, display.workArea.width - width)
+  );
+  const y = clamp(
+    Math.round(preferred?.y ?? display.workArea.y + (display.workArea.height - height) / 2),
+    display.workArea.y,
+    display.workArea.y + Math.max(0, display.workArea.height - height)
+  );
+  return { x, y, width, height };
 }
 
 function registerIpc(paths: ReturnType<typeof makeStoragePaths>): void {
@@ -284,7 +492,17 @@ function registerIpc(paths: ReturnType<typeof makeStoragePaths>): void {
     islandHovered = Boolean(hovered);
     updateIslandMouseInteractivity();
   });
+  ipcMain.handle('island:set-layout', (_event, size: { width: number; height: number }) => {
+    setIslandLayout(size);
+  });
   ipcMain.handle('window:settings', openSettings);
+  ipcMain.handle('window:settings-control', (_event, action: 'close' | 'minimize' | 'zoom') =>
+    controlSettingsWindow(action)
+  );
+  ipcMain.handle('window:settings-state', getSettingsWindowState);
+  ipcMain.handle('window:settings-drag-start', (_event, point) => beginSettingsWindowDrag(point));
+  ipcMain.handle('window:settings-drag-move', (_event, point) => moveSettingsWindowDrag(point));
+  ipcMain.handle('window:settings-drag-end', endSettingsWindowDrag);
   ipcMain.handle('shell:open-path', (_event, path: string) => shell.openPath(path));
 
   ipcMain.handle('config:update', async (_event, partial: Partial<AppConfig>) => {

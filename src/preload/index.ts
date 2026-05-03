@@ -21,7 +21,25 @@ const api = {
   },
   setExpanded: (expanded: boolean): Promise<void> => ipcRenderer.invoke('island:set-expanded', expanded),
   setIslandHovered: (hovered: boolean): Promise<void> => ipcRenderer.invoke('island:set-hovered', hovered),
+  setIslandLayout: (size: { width: number; height: number }): Promise<void> => ipcRenderer.invoke('island:set-layout', size),
   openSettings: (): Promise<void> => ipcRenderer.invoke('window:settings'),
+  getSettingsWindowState: (): Promise<{ maximized: boolean }> => ipcRenderer.invoke('window:settings-state'),
+  onSettingsWindowState: (callback: (state: { maximized: boolean }) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, state: { maximized: boolean }): void => callback(state);
+    ipcRenderer.on('window:settings-state', listener);
+    return () => ipcRenderer.off('window:settings-state', listener);
+  },
+  controlSettingsWindow: (action: 'close' | 'minimize' | 'zoom'): Promise<{ maximized: boolean }> =>
+    ipcRenderer.invoke('window:settings-control', action),
+  beginSettingsWindowDrag: (point: {
+    screenX: number;
+    screenY: number;
+    clientX: number;
+    clientY: number;
+  }): Promise<{ maximized: boolean }> => ipcRenderer.invoke('window:settings-drag-start', point),
+  moveSettingsWindowDrag: (point: { screenX: number; screenY: number }): Promise<void> =>
+    ipcRenderer.invoke('window:settings-drag-move', point),
+  endSettingsWindowDrag: (): Promise<void> => ipcRenderer.invoke('window:settings-drag-end'),
   updateConfig: (config: Partial<AppConfig>): Promise<AppConfig> => ipcRenderer.invoke('config:update', config),
   installHook: (agent: AgentId): Promise<HookInstallResult> => ipcRenderer.invoke('agents:install-hook', agent),
   uninstallHook: (agent: AgentId): Promise<HookInstallResult> => ipcRenderer.invoke('agents:uninstall-hook', agent),

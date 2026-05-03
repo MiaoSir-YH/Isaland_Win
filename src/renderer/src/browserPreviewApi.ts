@@ -13,6 +13,7 @@ const now = new Date().toISOString();
 export function createBrowserPreviewApi(): VibeIslandApi {
   let expanded = false;
   let sampleCount = 0;
+  let settingsMaximized = false;
   let snapshot: AppSnapshot = {
     config: DEFAULT_CONFIG,
     runtime: null,
@@ -82,6 +83,7 @@ export function createBrowserPreviewApi(): VibeIslandApi {
 
   const snapshotListeners = new Set<(next: AppSnapshot) => void>();
   const expandedListeners = new Set<(next: boolean) => void>();
+  const settingsStateListeners = new Set<(next: { maximized: boolean }) => void>();
 
   function emitSnapshot(): void {
     for (const listener of snapshotListeners) listener(snapshot);
@@ -89,6 +91,10 @@ export function createBrowserPreviewApi(): VibeIslandApi {
 
   function emitExpanded(): void {
     for (const listener of expandedListeners) listener(expanded);
+  }
+
+  function emitSettingsState(): void {
+    for (const listener of settingsStateListeners) listener({ maximized: settingsMaximized });
   }
 
   return {
@@ -106,9 +112,29 @@ export function createBrowserPreviewApi(): VibeIslandApi {
       emitExpanded();
     },
     setIslandHovered: async () => undefined,
+    setIslandLayout: async () => undefined,
     openSettings: async () => {
       window.location.search = '?view=settings';
     },
+    getSettingsWindowState: async () => ({ maximized: settingsMaximized }),
+    onSettingsWindowState: (callback) => {
+      settingsStateListeners.add(callback);
+      return () => settingsStateListeners.delete(callback);
+    },
+    controlSettingsWindow: async (action) => {
+      if (action === 'zoom') {
+        settingsMaximized = !settingsMaximized;
+        emitSettingsState();
+      }
+      return { maximized: settingsMaximized };
+    },
+    beginSettingsWindowDrag: async () => {
+      settingsMaximized = false;
+      emitSettingsState();
+      return { maximized: settingsMaximized };
+    },
+    moveSettingsWindowDrag: async () => undefined,
+    endSettingsWindowDrag: async () => undefined,
     updateConfig: async (partial: Partial<AppConfig>) => {
       snapshot = {
         ...snapshot,
