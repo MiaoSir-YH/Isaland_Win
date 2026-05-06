@@ -5,6 +5,7 @@ import {
   shouldAutoClearIslandNotification,
   shouldPromoteToIslandNotification,
   shouldPromoteWithStrategy,
+  shouldShowSystemNotification,
   shouldReplaceIslandNotification
 } from '../src/shared/attention';
 import { normalizeEvent } from '../src/shared/normalize';
@@ -25,6 +26,38 @@ describe('island attention rules', () => {
     expect(shouldPromoteWithStrategy(event, 'focused')).toBe(false);
     expect(shouldPromoteWithStrategy(event, 'realtime')).toBe(true);
     expect(shouldPromoteWithStrategy(event, 'silent')).toBe(false);
+  });
+
+  it('does not promote generic Claude notifications as questions', () => {
+    const event = normalizeEvent(
+      {
+        hook_event_name: 'Notification',
+        session_id: 's1',
+        title: 'Claude 状态更新',
+        message: 'Background sync completed',
+        notification_type: 'info'
+      },
+      'claude'
+    );
+
+    expect(getIslandAttentionReason(event)).toBe('none');
+    expect(shouldPromoteWithStrategy(event, 'focused')).toBe(false);
+  });
+
+  it('promotes mirrored Claude permission notifications', () => {
+    const event = normalizeEvent(
+      {
+        hook_event_name: 'Notification',
+        session_id: 's1',
+        message: 'Claude needs your permission to use Read',
+        notification_type: 'permission_prompt'
+      },
+      'claude'
+    );
+
+    expect(getIslandAttentionReason(event)).toBe('question');
+    expect(shouldPromoteWithStrategy(event, 'focused')).toBe(true);
+    expect(shouldShowSystemNotification(event)).toBe(true);
   });
 
   it('promotes non-interrupt session completion', () => {

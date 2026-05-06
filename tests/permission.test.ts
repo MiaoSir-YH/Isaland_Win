@@ -12,11 +12,11 @@ describe('permission timeout', () => {
     });
   });
 
-  it('caps permission notice timeout at 8 seconds', () => {
-    expect(getPermissionNoticeTimeoutMs(120000)).toBe(8000);
+  it('caps permission notice timeout at 120 seconds', () => {
+    expect(getPermissionNoticeTimeoutMs(240000)).toBe(120000);
   });
 
-  it('respects request timeout when shorter than 8 seconds', () => {
+  it('respects request timeout when shorter than the cap', () => {
     expect(getPermissionNoticeTimeoutMs(3000)).toBe(3000);
   });
 

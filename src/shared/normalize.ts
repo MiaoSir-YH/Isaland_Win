@@ -1,6 +1,18 @@
 import type { AgentId, EventType, NormalizedEvent, PermissionRequest, Severity } from './types';
 
-const KNOWN_AGENTS = new Set<AgentId>(['codex', 'claude', 'gemini', 'opencode', 'unknown']);
+const KNOWN_AGENTS = new Set<AgentId>([
+  'codex',
+  'claude',
+  'gemini',
+  'opencode',
+  'cursor',
+  'kimi',
+  'qoder',
+  'qwen',
+  'factory',
+  'codebuddy',
+  'unknown'
+]);
 
 export function normalizeAgent(value: unknown, fallback: AgentId = 'unknown'): AgentId {
   if (typeof value !== 'string') return fallback;
@@ -20,13 +32,13 @@ export function normalizeEvent(raw: unknown, fallbackAgent: AgentId = 'unknown')
   const agent = normalizeAgent(payload.agent, fallbackAgent);
   const eventType = mapEventType(eventName, payload);
   const timestamp = stringValue(payload.timestamp, payload.time) ?? new Date().toISOString();
-  const sessionId = stringValue(payload.sessionId, payload.session_id, payload.conversationId);
+  const sessionId = stringValue(payload.sessionId, payload.session_id, payload.conversationId, payload.threadId);
   const workspace = stringValue(payload.workspace, payload.cwd, payload.project, payload.projectDir);
   const toolName = stringValue(payload.toolName, payload.tool_name, payload.tool);
   const command = extractCommand(payload);
   const severity = mapSeverity(payload.severity, eventType);
-  const title = stringValue(payload.title) ?? defaultTitle(agent, eventType, toolName);
-  const message = stringValue(payload.message, payload.text, payload.summary) ?? command;
+  const message = stringValue(payload.message, payload.text, payload.summary, payload.prompt, payload.question) ?? command;
+  const title = stringValue(payload.title) ?? defaultTitle(agent, eventType, payload, toolName, message);
 
   return {
     schemaVersion: 1,
@@ -50,22 +62,35 @@ export function normalizePermissionRequest(raw: unknown, fallbackAgent: AgentId 
   const agent = normalizeAgent(payload.agent, fallbackAgent);
   const toolName = stringValue(payload.toolName, payload.tool_name, payload.tool);
   const command = extractCommand(payload);
+  const kind = isQuestionPayload(payload) ? 'question' : 'permission';
+  const toolQuestion = extractToolQuestion(payload);
   const action =
-    stringValue(payload.action, payload.reason, payload.description) ??
-    (toolName ? `请求执行 ${toolName}` : '请求权限确认');
+    stringValue(payload.action, payload.reason, payload.description, payload.title) ??
+    (kind === 'question'
+      ? toolQuestion?.question
+        ? '需要回答'
+        : '需要回答'
+      : toolName
+        ? `请求执行 ${toolName}`
+        : '请求权限确认');
+  const prompt = stringValue(payload.prompt, payload.question, payload.message, payload.text, toolQuestion?.question);
 
   return {
     schemaVersion: 1,
     id: stringValue(payload.id, payload.requestId, payload.request_id) ?? makeId('perm'),
+    kind,
     timestamp: stringValue(payload.timestamp, payload.time) ?? new Date().toISOString(),
     agent,
-    sessionId: stringValue(payload.sessionId, payload.session_id, payload.conversationId),
+    sessionId: stringValue(payload.sessionId, payload.session_id, payload.conversationId, payload.threadId),
     workspace: stringValue(payload.workspace, payload.cwd, payload.project, payload.projectDir),
     toolName,
     action,
+    prompt,
+    choices: stringArrayValue(payload.choices, payload.options, payload.suggestions, toolQuestion?.choices),
     command,
     risk: mapRisk(payload.risk, command),
     timeoutMs: numberValue(payload.timeoutMs, payload.timeout_ms) ?? 120000,
+    sourceRequestId: stringValue(payload.sourceRequestId, payload.source_request_id, payload.requestId, payload.request_id),
     metadata: payload
   };
 }
@@ -74,7 +99,11 @@ export function isPermissionLike(raw: unknown): boolean {
   const payload = asRecord(raw);
   const name = stringValue(payload.eventType, payload.event_type, payload.hook_event_name, payload.type, payload.name);
   if (!name) return false;
-  return /permission|approval|pretooluse|pre-tool-use|before_tool/i.test(name);
+  return isPermissionEventName(name);
+}
+
+export function isQuestionLike(raw: unknown): boolean {
+  return isQuestionPayload(asRecord(raw));
 }
 
 function mapEventType(eventName: string | undefined, payload: Record<string, unknown>): EventType {
@@ -91,6 +120,28 @@ function mapEventType(eventName: string | undefined, payload: Record<string, unk
   if (/assistant|message|response/.test(name)) return 'assistant';
   if (payload.toolName || payload.tool_name || payload.tool) return 'tool-start';
   return 'status';
+}
+
+function isQuestionPayload(payload: Record<string, unknown>): boolean {
+  const name = stringValue(payload.eventType, payload.event_type, payload.hook_event_name, payload.type, payload.name);
+  if (isQuestionEventName(name)) return true;
+  if (payload.question || payload.choices || payload.options) return true;
+
+  const toolName = stringValue(payload.toolName, payload.tool_name, payload.tool);
+  if (toolName?.toLowerCase() === 'askuserquestion') return true;
+
+  const toolInput = asRecord(payload.tool_input);
+  if (Array.isArray(toolInput.questions) && toolInput.questions.length > 0) return true;
+
+  return false;
+}
+
+function isPermissionEventName(name: string | undefined): boolean {
+  return /permission|approval/i.test(name ?? '');
+}
+
+function isQuestionEventName(name: string | undefined): boolean {
+  return /question|needs[\s_-]*input|input[\s_-]*request|(^|[\s_-])ask($|[\s_-])/i.test(name ?? '');
 }
 
 function mapSeverity(value: unknown, eventType: EventType): Severity {
@@ -117,13 +168,35 @@ function mapRisk(value: unknown, command: string | undefined): PermissionRequest
   return 'low';
 }
 
-function defaultTitle(agent: AgentId, eventType: EventType, toolName?: string): string {
+function defaultTitle(
+  agent: AgentId,
+  eventType: EventType,
+  payload: Record<string, unknown>,
+  toolName?: string,
+  message?: string
+): string {
   const agentName = agent === 'unknown' ? 'Agent' : agent.charAt(0).toUpperCase() + agent.slice(1);
   if (eventType === 'tool-start' && toolName) return `${agentName} 正在使用 ${toolName}`;
   if (eventType === 'tool-end' && toolName) return `${agentName} 完成 ${toolName}`;
   if (eventType === 'permission') return `${agentName} 请求权限`;
   if (eventType === 'session-start') return `${agentName} 会话开始`;
   if (eventType === 'session-stop') return `${agentName} 会话结束`;
+  if (eventType === 'user') return `${agentName} 收到输入`;
+  if (eventType === 'notification' && agent === 'claude') {
+    const notificationType = stringValue(payload.notification_type)?.toLowerCase();
+    const text = `${message ?? ''}`.toLowerCase();
+    if (notificationType === 'permission_prompt' || /needs your permission|需要.*权限/.test(text)) {
+      return 'Claude 请求权限';
+    }
+    if (
+      notificationType === 'idle_prompt' ||
+      notificationType === 'input_waiting' ||
+      /waiting for your input|等待.*输入/.test(text)
+    ) {
+      return 'Claude 等待输入';
+    }
+  }
+  if (eventType === 'notification') return `${agentName} 通知`;
   return `${agentName} 状态更新`;
 }
 
@@ -150,6 +223,39 @@ function numberValue(...values: unknown[]): number | undefined {
     }
   }
   return undefined;
+}
+
+function stringArrayValue(...values: unknown[]): string[] | undefined {
+  for (const value of values) {
+    if (!Array.isArray(value)) continue;
+    const strings = value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+    if (strings.length > 0) return strings;
+  }
+  return undefined;
+}
+
+function extractToolQuestion(
+  payload: Record<string, unknown>
+): { question?: string; choices?: string[] } | undefined {
+  const toolInput = asRecord(payload.tool_input);
+  const questions = toolInput.questions;
+  if (!Array.isArray(questions) || questions.length === 0) return undefined;
+  const first = asRecord(questions[0]);
+  const options = Array.isArray(first.options) ? first.options : [];
+  const choices = options
+    .map((option) => {
+      if (typeof option === 'string') return option.trim();
+      if (option && typeof option === 'object' && typeof (option as Record<string, unknown>).label === 'string') {
+        return ((option as Record<string, unknown>).label as string).trim();
+      }
+      return '';
+    })
+    .filter((value) => value.length > 0);
+
+  return {
+    question: stringValue(first.question, first.prompt, first.header),
+    choices: choices.length > 0 ? choices : undefined
+  };
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

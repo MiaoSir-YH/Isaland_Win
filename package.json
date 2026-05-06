@@ -16,6 +16,7 @@
     "hook": "node scripts/vibe-island-hook.mjs"
   },
   "dependencies": {
+    "electron-updater": "^6.8.3",
     "lucide-react": "^0.468.0",
     "motion": "^12.38.0",
     "react": "^18.3.1",
@@ -40,6 +41,13 @@
     "directories": {
       "output": "release"
     },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "MiaoSir-YH",
+        "repo": "Island_Win"
+      }
+    ],
     "files": [
       "out/**",
       "scripts/**",
@@ -57,7 +65,8 @@
     "win": {
       "signAndEditExecutable": false,
       "target": [
-        "nsis"
+        "nsis",
+        "zip"
       ],
       "artifactName": "${productName}-${version}-${arch}.${ext}"
     },

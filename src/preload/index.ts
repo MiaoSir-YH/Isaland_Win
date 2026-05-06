@@ -3,8 +3,10 @@ import type {
   AgentId,
   AppConfig,
   AppSnapshot,
+  DiagnosticsInfo,
   HookInstallResult,
-  PermissionResponse
+  PermissionResponse,
+  UpdateConfig
 } from '@shared/types';
 
 const api = {
@@ -44,9 +46,13 @@ const api = {
   updateConfig: (config: Partial<AppConfig>): Promise<AppConfig> => ipcRenderer.invoke('config:update', config),
   installHook: (agent: AgentId): Promise<HookInstallResult> => ipcRenderer.invoke('agents:install-hook', agent),
   uninstallHook: (agent: AgentId): Promise<HookInstallResult> => ipcRenderer.invoke('agents:uninstall-hook', agent),
+  installClaudeStatusLine: (): Promise<HookInstallResult> => ipcRenderer.invoke('agents:install-claude-status-line'),
+  uninstallClaudeStatusLine: (): Promise<HookInstallResult> => ipcRenderer.invoke('agents:uninstall-claude-status-line'),
   respondPermission: (response: PermissionResponse): Promise<void> => ipcRenderer.invoke('permission:respond', response),
-  jumpWorkspace: (workspace?: string): Promise<{ ok: boolean; message: string }> =>
-    ipcRenderer.invoke('jump:workspace', workspace),
+  jumpWorkspace: (target?: string | { sessionId?: string; workspace?: string }): Promise<{ ok: boolean; message: string }> =>
+    ipcRenderer.invoke('jump:workspace', target),
+  refreshDiagnostics: (): Promise<DiagnosticsInfo> => ipcRenderer.invoke('diagnostics:refresh'),
+  checkForUpdates: (): Promise<UpdateConfig> => ipcRenderer.invoke('updates:check'),
   sendSampleEvent: (agent: AgentId): Promise<void> => ipcRenderer.invoke('dev:sample-event', agent),
   openPath: (path: string): Promise<string> => ipcRenderer.invoke('shell:open-path', path)
 };

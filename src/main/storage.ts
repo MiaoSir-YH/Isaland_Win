@@ -28,10 +28,7 @@ export async function ensureStorage(paths: StoragePaths): Promise<void> {
 
 export async function loadConfig(paths: StoragePaths): Promise<AppConfig> {
   const stored = await readJson<Partial<AppConfig>>(paths.config, {});
-  return {
-    ...DEFAULT_CONFIG,
-    ...stored
-  };
+  return normalizeConfig(stored);
 }
 
 export async function saveConfig(paths: StoragePaths, config: AppConfig): Promise<void> {
@@ -39,7 +36,8 @@ export async function saveConfig(paths: StoragePaths, config: AppConfig): Promis
 }
 
 export async function loadSessions(paths: StoragePaths): Promise<AgentSession[]> {
-  return readJson<AgentSession[]>(paths.sessions, []);
+  const sessions = await readJson<AgentSession[]>(paths.sessions, []);
+  return sessions.filter((session) => !isNoisyStoredSession(session));
 }
 
 export async function saveSessions(paths: StoragePaths, sessions: AgentSession[]): Promise<void> {
@@ -58,7 +56,8 @@ export async function loadRecentEvents(paths: StoragePaths, limit = 80): Promise
       .split(/\r?\n/)
       .filter(Boolean)
       .slice(-limit)
-      .map((line) => JSON.parse(line) as NormalizedEvent);
+      .map((line) => JSON.parse(line) as NormalizedEvent)
+      .filter((event) => !isNoisyStoredEvent(event));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
     throw error;
@@ -81,5 +80,45 @@ async function readJson<T>(filePath: string, fallback: T): Promise<T> {
 async function writeJson(filePath: string, value: unknown): Promise<void> {
   await mkdir(dirname(filePath), { recursive: true });
   await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+}
+
+function isNoisyStoredSession(session: AgentSession): boolean {
+  if (session.metadata?.discoverySource === 'jump') return true;
+  if (session.metadata?.discoverySource === 'transcript' && session.liveness === 'stale') return true;
+  return session.status === 'status' && session.lastMessage === 'Discovered local session' && !session.metadata?.terminal;
+}
+
+function isNoisyStoredEvent(event: NormalizedEvent): boolean {
+  if (event.metadata?.source === 'jump') return true;
+  const name = String(event.metadata?.hook_event_name ?? event.metadata?.eventType ?? event.metadata?.type ?? '');
+  return /^StatusLine$/i.test(name);
+}
+
+function normalizeConfig(stored: Partial<AppConfig> & Record<string, unknown>): AppConfig {
+  const sound =
+    typeof stored.sound === 'boolean'
+      ? { ...DEFAULT_CONFIG.sound, enabled: stored.sound }
+      : {
+          ...DEFAULT_CONFIG.sound,
+          ...(typeof stored.sound === 'object' && stored.sound !== null ? stored.sound : {})
+        };
+
+  return {
+    ...DEFAULT_CONFIG,
+    ...stored,
+    sound,
+    experiments: {
+      ...DEFAULT_CONFIG.experiments,
+      ...(typeof stored.experiments === 'object' && stored.experiments !== null ? stored.experiments : {})
+    },
+    update: {
+      ...DEFAULT_CONFIG.update,
+      ...(typeof stored.update === 'object' && stored.update !== null ? stored.update : {})
+    },
+    remote: {
+      ...DEFAULT_CONFIG.remote,
+      ...(typeof stored.remote === 'object' && stored.remote !== null ? stored.remote : {})
+    }
+  };
 }
 

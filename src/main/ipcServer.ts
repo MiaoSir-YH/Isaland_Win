@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { randomBytes } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import type { AgentId, NormalizedEvent, PermissionRequest, PermissionResponse, RuntimeInfo } from '@shared/types';
-import { isPermissionLike, normalizeEvent, normalizePermissionRequest } from '@shared/normalize';
+import { isPermissionLike, isQuestionLike, normalizeAgent, normalizeEvent, normalizePermissionRequest } from '@shared/normalize';
 
 interface IpcServerOptions {
   onEvent: (event: NormalizedEvent) => Promise<void>;
@@ -64,7 +64,7 @@ async function routeRequest(
       const body = await readBody(request);
       const raw = JSON.parse(body || '{}') as Record<string, unknown>;
       const agent = normalizeAgentParam(url.searchParams.get('agent'), raw.agent);
-      if (isPermissionLike(raw)) {
+      if (isActionableEvent(raw, agent)) {
         const permission = normalizePermissionRequest(raw, agent);
         const decision = await options.onPermissionRequest(permission);
         sendJson(response, 200, { ok: true, permission: decision });
@@ -80,6 +80,18 @@ async function routeRequest(
       const body = await readBody(request);
       const raw = JSON.parse(body || '{}') as Record<string, unknown>;
       const permission = normalizePermissionRequest(raw, normalizeAgentParam(url.searchParams.get('agent'), raw.agent));
+      const decision = await options.onPermissionRequest(permission);
+      sendJson(response, 200, { ok: true, permission: decision });
+      return;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/v1/question/request') {
+      const body = await readBody(request);
+      const raw = JSON.parse(body || '{}') as Record<string, unknown>;
+      const permission = normalizePermissionRequest(
+        { ...raw, type: raw.type ?? 'question' },
+        normalizeAgentParam(url.searchParams.get('agent'), raw.agent)
+      );
       const decision = await options.onPermissionRequest(permission);
       sendJson(response, 200, { ok: true, permission: decision });
       return;
@@ -107,10 +119,36 @@ function isAuthorized(request: IncomingMessage, token: string): boolean {
 
 function normalizeAgentParam(value: unknown, fallback: unknown): AgentId {
   const candidate = typeof value === 'string' ? value : fallback;
-  if (candidate === 'codex' || candidate === 'claude' || candidate === 'gemini' || candidate === 'opencode') {
-    return candidate;
-  }
-  return 'unknown';
+  return normalizeAgent(candidate);
+}
+
+function isActionableEvent(raw: Record<string, unknown>, agent: AgentId): boolean {
+  if (agent === 'claude' && !isClaudeActionable(raw)) return false;
+  return isPermissionLike(raw) || isQuestionLike(raw);
+}
+
+function isClaudeActionable(raw: Record<string, unknown>): boolean {
+  if (raw.vibeIslandActionable === true) return true;
+  const eventName =
+    typeof raw.eventType === 'string'
+      ? raw.eventType
+      : typeof raw.event_type === 'string'
+        ? raw.event_type
+        : typeof raw.hook_event_name === 'string'
+          ? raw.hook_event_name
+          : typeof raw.type === 'string'
+            ? raw.type
+            : typeof raw.name === 'string'
+              ? raw.name
+              : '';
+  return /permissionrequest/i.test(eventName);
+}
+
+function isClaudeQuestionTool(raw: Record<string, unknown>): boolean {
+  const toolName = typeof raw.tool_name === 'string' ? raw.tool_name : typeof raw.toolName === 'string' ? raw.toolName : typeof raw.tool === 'string' ? raw.tool : undefined;
+  if (toolName?.toLowerCase() !== 'askuserquestion') return false;
+  const toolInput = raw.tool_input;
+  return Boolean(toolInput && typeof toolInput === 'object');
 }
 
 function readBody(request: IncomingMessage): Promise<string> {

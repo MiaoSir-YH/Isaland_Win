@@ -2,8 +2,10 @@ import type {
   AgentId,
   AppConfig,
   AppSnapshot,
+  DiagnosticsInfo,
   HookInstallResult,
-  PermissionResponse
+  PermissionResponse,
+  UpdateConfig
 } from '@shared/types';
 import { DEFAULT_CONFIG } from '@shared/types';
 import type { VibeIslandApi } from '../../preload';
@@ -17,7 +19,6 @@ export function createBrowserPreviewApi(): VibeIslandApi {
   let snapshot: AppSnapshot = {
     config: DEFAULT_CONFIG,
     runtime: null,
-    permissions: [],
     agents: [
       {
         id: 'codex',
@@ -50,6 +51,30 @@ export function createBrowserPreviewApi(): VibeIslandApi {
         configPath: '%USERPROFILE%\\.config\\opencode\\opencode.json'
       }
     ],
+    usage: [
+      {
+        agent: 'codex',
+        source: '%USERPROFILE%\\.codex\\usage.json',
+        available: true,
+        fiveHour: { used: 22, limit: 100, resetAt: new Date(Date.now() + 42 * 60 * 1000).toISOString() },
+        sevenDay: { used: 140, limit: 500 },
+        updatedAt: now
+      },
+      {
+        agent: 'claude',
+        source: '%USERPROFILE%\\.claude\\usage.json',
+        available: false,
+        message: 'Usage cache not found.',
+        updatedAt: now
+      }
+    ],
+    diagnostics: {
+      runtimePath: '%TEMP%\\vibe-island-runtime.json',
+      hookHelperPath: 'M:\\ai-harness\\island\\scripts\\vibe-island-hook.mjs',
+      remoteUrl: 'http://127.0.0.1:48931',
+      ipcHealthy: true,
+      checkedAt: now
+    },
     notification: null,
     sessions: [
       {
@@ -61,6 +86,36 @@ export function createBrowserPreviewApi(): VibeIslandApi {
         lastMessage: 'layout animation preview',
         lastSeenAt: now,
         eventCount: 3
+      }
+    ],
+    permissions: [
+      {
+        schemaVersion: 1,
+        id: 'preview-permission',
+        kind: 'permission',
+        timestamp: now,
+        agent: 'codex',
+        sessionId: 'preview-codex',
+        workspace: 'O:\\w_Island',
+        toolName: 'Shell',
+        action: '运行构建检查',
+        command: 'npm run build',
+        risk: 'medium',
+        timeoutMs: 120000
+      },
+      {
+        schemaVersion: 1,
+        id: 'preview-question',
+        kind: 'question',
+        timestamp: now,
+        agent: 'claude',
+        sessionId: 'preview-claude',
+        workspace: 'O:\\w_Island',
+        action: '选择发布通道',
+        prompt: '要把更新检查指向哪个通道？',
+        choices: ['stable', 'prerelease'],
+        risk: 'low',
+        timeoutMs: 120000
       }
     ],
     events: [
@@ -175,7 +230,54 @@ export function createBrowserPreviewApi(): VibeIslandApi {
         message: '浏览器预览：已模拟卸载 hook。'
       };
     },
-    respondPermission: async (_response: PermissionResponse) => undefined,
+    installClaudeStatusLine: async (): Promise<HookInstallResult> => ({
+      agent: 'claude',
+      configPath: '%USERPROFILE%\\.claude\\settings.json',
+      installed: true,
+      changed: true,
+      message: '浏览器预览：已模拟安装 Claude statusLine。'
+    }),
+    uninstallClaudeStatusLine: async (): Promise<HookInstallResult> => ({
+      agent: 'claude',
+      configPath: '%USERPROFILE%\\.claude\\settings.json',
+      installed: false,
+      changed: true,
+      message: '浏览器预览：已模拟卸载 Claude statusLine。'
+    }),
+    respondPermission: async (response: PermissionResponse) => {
+      snapshot = {
+        ...snapshot,
+        permissions: snapshot.permissions.filter((request) => request.id !== response.id)
+      };
+      emitSnapshot();
+    },
+    refreshDiagnostics: async (): Promise<DiagnosticsInfo> => {
+      snapshot = {
+        ...snapshot,
+        diagnostics: {
+          ...snapshot.diagnostics,
+          checkedAt: new Date().toISOString()
+        }
+      };
+      emitSnapshot();
+      return snapshot.diagnostics;
+    },
+    checkForUpdates: async (): Promise<UpdateConfig> => {
+      snapshot = {
+        ...snapshot,
+        config: {
+          ...snapshot.config,
+          update: {
+            ...snapshot.config.update,
+            lastCheckedAt: new Date().toISOString(),
+            status: 'not-available',
+            message: '浏览器预览：当前已是最新版本。'
+          }
+        }
+      };
+      emitSnapshot();
+      return snapshot.config.update;
+    },
     jumpWorkspace: async () => ({
       ok: true,
       message: '浏览器预览：已模拟跳转。'

@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { randomBytes } from 'node:crypto';
 import {
   app,
   BrowserWindow,
@@ -21,11 +22,24 @@ import {
 } from '@shared/attention';
 import { EventDeduper } from '@shared/dedupe';
 import { normalizeEvent } from '@shared/normalize';
-import { detectAgents, installHook, uninstallHook } from '@shared/configAdapters';
+import {
+  detectAgents,
+  installClaudeStatusLine,
+  installHook,
+  uninstallClaudeStatusLine,
+  uninstallHook
+} from '@shared/configAdapters';
 import { createPermissionTimeoutResponse, getPermissionNoticeTimeoutMs } from '@shared/permission';
 import { startIpcServer, type IpcServerHandle } from './ipcServer';
 import { startCodexReplyWatcher, type CodexReplyWatcher } from './codexReplyWatcher';
-import { focusWindowsTerminal, jumpToWorkspace } from './jump';
+import { jumpToTerminalSession } from './jump';
+import { startCodexAppServer, type CodexAppServerCoordinator } from './codexAppServer';
+import { makeDiagnostics } from './diagnostics';
+import { startRemoteServer, type RemoteServerHandle } from './remoteServer';
+import { discoverSessions } from './sessionDiscovery';
+import { playConfiguredSound } from './sound';
+import { checkForUpdates } from './updates';
+import { collectUsage } from './usage';
 import { IslandState } from './state';
 import {
   appendEvent,
@@ -47,7 +61,11 @@ let settingsWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let ipcServer: IpcServerHandle | null = null;
 let codexReplyWatcher: CodexReplyWatcher | null = null;
+let codexAppServer: CodexAppServerCoordinator | null = null;
+let remoteServer: RemoteServerHandle | null = null;
 let state: IslandState;
+let storagePaths: ReturnType<typeof makeStoragePaths>;
+let lastError: string | undefined;
 let islandExpanded = false;
 let islandHovered = false;
 let islandPeeking = false;
@@ -95,6 +113,9 @@ async function bootstrap(): Promise<void> {
   Menu.setApplicationMenu(null);
 
   const paths = makeStoragePaths(app.getPath('appData'));
+  const userHome = process.env.USERPROFILE ?? app.getPath('home');
+  const hookHelper = helperPath();
+  storagePaths = paths;
   await ensureStorage(paths);
   const config = await loadConfig(paths);
   app.setLoginItemSettings({ openAtLogin: config.startAtLogin });
@@ -112,14 +133,24 @@ async function bootstrap(): Promise<void> {
   });
   await writeRuntime(paths, ipcServer.runtime);
 
-  const agents = await detectAgents(process.env.USERPROFILE, helperPath());
+  await refreshManagedAgentHooks(userHome, hookHelper);
+  const agents = await detectAgents(userHome, hookHelper);
   state = new IslandState({
     config,
     agents,
     sessions: await loadSessions(paths),
     events: await loadRecentEvents(paths),
-    runtime: ipcServer.runtime
+    runtime: ipcServer.runtime,
+    usage: await collectUsage(app.getPath('home')),
+    diagnostics: makeDiagnostics({
+      runtime: ipcServer.runtime,
+      runtimePath: paths.runtime,
+      hookHelperPath: hookHelper
+    })
   });
+  if (config.experiments.sessionDiscovery) {
+    state.mergeDiscoveredSessions(await discoverSessions(app.getPath('home')));
+  }
   codexReplyWatcher = startCodexReplyWatcher({
     codexHome: join(app.getPath('home'), '.codex'),
     onReply: async (reply) => {
@@ -142,6 +173,18 @@ async function bootstrap(): Promise<void> {
       });
     }
   });
+  codexAppServer = startCodexAppServerForConfig(config);
+  if (config.remote.enabled) {
+    if (!config.remote.token) {
+      config.remote.token = makeRemoteToken();
+      await saveConfig(paths, config);
+    }
+    remoteServer = await startRemoteServer({
+      token: config.remote.token,
+      onResolution: resolvePermission
+    });
+    refreshDiagnostics();
+  }
 
   createIslandWindow();
   createTray();
@@ -160,7 +203,9 @@ async function bootstrap(): Promise<void> {
 
 app.on('before-quit', () => {
   codexReplyWatcher?.close();
+  codexAppServer?.close();
   if (ipcServer) void ipcServer.close();
+  if (remoteServer) void remoteServer.close();
   stopIslandPositionAnimation();
   clearIslandSurfaceRefreshTimer();
 });
@@ -307,7 +352,9 @@ function setIslandPeeking(peeking: boolean): void {
 function updateIslandMouseInteractivity(): void {
   if (!islandWindow || islandWindow.isDestroyed()) return;
   const clickThrough = state.getConfig().islandClickThrough;
-  islandWindow.setIgnoreMouseEvents(!islandExpanded && (clickThrough || !islandHovered), { forward: true });
+  const hasActionableNotice = state.snapshot().permissions.length > 0;
+  const ignoreMouseEvents = !islandExpanded && !hasActionableNotice && clickThrough && !islandHovered;
+  islandWindow.setIgnoreMouseEvents(ignoreMouseEvents, { forward: ignoreMouseEvents });
 }
 
 function getIslandCanvasBounds(): Electron.Rectangle {
@@ -625,7 +672,8 @@ function registerIpc(paths: ReturnType<typeof makeStoragePaths>): void {
   ipcMain.handle('shell:open-path', (_event, path: string) => shell.openPath(path));
 
   ipcMain.handle('config:update', async (_event, partial: Partial<AppConfig>) => {
-    const next = { ...state.getConfig(), ...partial };
+    const previous = state.getConfig();
+    const next = mergeConfig(previous, partial);
     state.setConfig(next);
     if (next.notificationStrategy === 'silent') {
       clearActiveNotification();
@@ -635,6 +683,7 @@ function registerIpc(paths: ReturnType<typeof makeStoragePaths>): void {
     app.setLoginItemSettings({ openAtLogin: next.startAtLogin });
     updateIslandMouseInteractivity();
     await saveConfig(paths, next);
+    await refreshRuntimeServices(previous, next);
     broadcastSnapshot();
     return next;
   });
@@ -658,11 +707,42 @@ function registerIpc(paths: ReturnType<typeof makeStoragePaths>): void {
     broadcastSnapshot();
   });
 
-  ipcMain.handle('jump:workspace', async (_event, workspace?: string) => {
-    const target = state.getConfig().jumpTarget;
-    if (target === 'none') return { ok: false, message: 'Jump target is disabled.' };
-    if (target === 'terminal') return focusWindowsTerminal();
-    return jumpToWorkspace(workspace);
+  ipcMain.handle('jump:workspace', async (_event, jumpTarget?: string | { sessionId?: string; workspace?: string }) => {
+    const session = resolveJumpSession(jumpTarget);
+    const configuredTarget = state.getConfig().jumpTarget;
+    if (configuredTarget === 'none') return { ok: false, message: '跳转失败：跳转功能已关闭。' };
+    return jumpToTerminalSession(session);
+  });
+
+  ipcMain.handle('agents:install-claude-status-line', async () => {
+    const result = await installClaudeStatusLine(
+      `node "${statusLinePath().replace(/"/g, '\\"')}"`
+    );
+    broadcastSnapshot();
+    return result;
+  });
+
+  ipcMain.handle('agents:uninstall-claude-status-line', async () => {
+    const result = await uninstallClaudeStatusLine();
+    broadcastSnapshot();
+    return result;
+  });
+
+  ipcMain.handle('diagnostics:refresh', async () => {
+    await refreshDiagnostics();
+    broadcastSnapshot();
+    return state.snapshot().diagnostics;
+  });
+
+  ipcMain.handle('updates:check', async () => {
+    const next = {
+      ...state.getConfig(),
+      update: await checkForUpdates(state.getConfig().update)
+    };
+    state.setConfig(next);
+    await saveConfig(paths, next);
+    broadcastSnapshot();
+    return next.update;
   });
 
   ipcMain.handle('dev:sample-event', async (_event, agent: AgentId) => {
@@ -695,6 +775,10 @@ async function recordEvent(event: NormalizedEvent): Promise<void> {
   if (config.notifications && config.notificationStrategy !== 'silent' && shouldShowSystemNotification(event)) {
     new Notification({ title: event.title, body: event.message }).show();
   }
+  if (config.sound.enabled && shouldShowSystemNotification(event)) {
+    playConfiguredSound(config.sound);
+  }
+  remoteServer?.pushEvent(event);
   broadcastSnapshot();
 }
 
@@ -723,9 +807,24 @@ function clearActiveNotification(): void {
   state.clearNotification();
 }
 
+function resolveJumpSession(target?: string | { sessionId?: string; workspace?: string }) {
+  const sessions = state.snapshot().sessions;
+  const sessionId = typeof target === 'object' ? target.sessionId : undefined;
+  const workspace = typeof target === 'string' ? target : target?.workspace;
+  if (sessionId) return sessions.find((session) => session.id === sessionId);
+  if (workspace) {
+    return (
+      sessions.find((session) => session.workspace === workspace && session.metadata?.terminal) ??
+      sessions.find((session) => session.workspace === workspace)
+    );
+  }
+  return sessions.find((session) => session.metadata?.terminal);
+}
+
 function waitForPermission(request: PermissionRequest): Promise<PermissionResponse> {
   clearActiveNotification();
   state.addPermission(request);
+  updateIslandMouseInteractivity();
   broadcastSnapshot();
   showIsland();
   setIslandExpanded(false);
@@ -733,6 +832,8 @@ function waitForPermission(request: PermissionRequest): Promise<PermissionRespon
   if (config.notifications && config.notificationStrategy !== 'silent') {
     new Notification({ title: request.action, body: request.command }).show();
   }
+  playConfiguredSound(config.sound);
+  remoteServer?.pushEvent(request);
 
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
@@ -763,9 +864,111 @@ function broadcastSnapshot(): void {
   }
 }
 
+function mergeConfig(current: AppConfig, partial: Partial<AppConfig>): AppConfig {
+  return {
+    ...current,
+    ...partial,
+    sound: {
+      ...current.sound,
+      ...(partial.sound ?? {})
+    },
+    experiments: {
+      ...current.experiments,
+      ...(partial.experiments ?? {})
+    },
+    update: {
+      ...current.update,
+      ...(partial.update ?? {})
+    },
+    remote: {
+      ...current.remote,
+      ...(partial.remote ?? {})
+    }
+  };
+}
+
+async function refreshRuntimeServices(previous: AppConfig, config: AppConfig): Promise<void> {
+  if (previous.experiments.codexAppServer !== config.experiments.codexAppServer) {
+    codexAppServer?.close();
+    codexAppServer = startCodexAppServerForConfig(config);
+  }
+
+  const remoteChanged =
+    previous.remote.enabled !== config.remote.enabled || previous.remote.token !== config.remote.token;
+  if (remoteChanged && remoteServer) {
+    await remoteServer.close();
+    remoteServer = null;
+  }
+  if (remoteChanged && config.remote.enabled) {
+    if (!config.remote.token) {
+      config.remote.token = makeRemoteToken();
+      state.setConfig(config);
+      await saveConfig(storagePaths, config);
+    }
+    remoteServer = await startRemoteServer({
+      token: config.remote.token,
+      onResolution: resolvePermission
+    });
+  }
+
+  state.setUsage(await collectUsage(app.getPath('home')));
+  if (config.experiments.sessionDiscovery) {
+    state.mergeDiscoveredSessions(await discoverSessions(app.getPath('home')));
+  }
+  refreshDiagnostics();
+}
+
+function startCodexAppServerForConfig(config: AppConfig): CodexAppServerCoordinator | null {
+  return startCodexAppServer({
+    enabled: config.experiments.codexAppServer,
+    onEvent: (event) => {
+      void recordEvent(event);
+    },
+    onError: (message) => {
+      lastError = message;
+      refreshDiagnostics();
+    }
+  });
+}
+
+function refreshDiagnostics(): void {
+  state.setDiagnostics(
+    makeDiagnostics({
+      runtime: ipcServer?.runtime ?? null,
+      runtimePath: storagePaths?.runtime,
+      hookHelperPath: helperPath(),
+      remoteUrl: remoteServer?.url,
+      lastError
+    })
+  );
+}
+
+function makeRemoteToken(): string {
+  return randomBytes(24).toString('hex');
+}
+
 function helperPath(): string {
   if (app.isPackaged) return join(process.resourcesPath, 'scripts', 'vibe-island-hook.mjs');
   return join(process.cwd(), 'scripts', 'vibe-island-hook.mjs');
+}
+
+async function refreshManagedAgentHooks(home: string, helperCommand: string): Promise<void> {
+  const detectedAgents = await detectAgents(home, helperCommand);
+  for (const agent of detectedAgents) {
+    if (!agent.hookInstalled || agent.id === 'unknown') continue;
+    try {
+      await installHook(agent.id, helperCommand, home);
+    } catch (error) {
+      lastError = `Failed to refresh managed ${agent.name} hook: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+    }
+  }
+}
+
+function statusLinePath(): string {
+  if (app.isPackaged) return join(process.resourcesPath, 'scripts', 'vibe-island-statusline.mjs');
+  return join(process.cwd(), 'scripts', 'vibe-island-statusline.mjs');
 }
 
 function summarizeReply(text: string): string {

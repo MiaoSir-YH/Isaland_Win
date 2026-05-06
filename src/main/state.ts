@@ -1,7 +1,9 @@
 import type {
   AgentDescriptor,
+  AgentUsage,
   AgentSession,
   AppConfig,
+  DiagnosticsInfo,
   AppSnapshot,
   NormalizedEvent,
   PermissionRequest,
@@ -17,6 +19,8 @@ export class IslandState {
   private permissions: PermissionRequest[];
   private notification: NormalizedEvent | null;
   private runtime: RuntimeInfo | null;
+  private usage: AgentUsage[];
+  private diagnostics: DiagnosticsInfo;
 
   constructor(input: {
     config: AppConfig;
@@ -24,6 +28,8 @@ export class IslandState {
     sessions: AgentSession[];
     events: NormalizedEvent[];
     runtime: RuntimeInfo | null;
+    usage?: AgentUsage[];
+    diagnostics: DiagnosticsInfo;
   }) {
     this.config = input.config;
     this.agents = input.agents;
@@ -32,6 +38,8 @@ export class IslandState {
     this.permissions = [];
     this.notification = null;
     this.runtime = input.runtime;
+    this.usage = input.usage ?? [];
+    this.diagnostics = input.diagnostics;
   }
 
   snapshot(): AppSnapshot {
@@ -42,7 +50,9 @@ export class IslandState {
       events: this.events.slice(-80).reverse(),
       permissions: this.permissions,
       notification: this.notification,
-      runtime: this.runtime
+      runtime: this.runtime,
+      usage: this.usage,
+      diagnostics: this.diagnostics
     };
   }
 
@@ -62,6 +72,24 @@ export class IslandState {
     this.runtime = runtime;
   }
 
+  setUsage(usage: AgentUsage[]): void {
+    this.usage = usage;
+  }
+
+  setDiagnostics(diagnostics: DiagnosticsInfo): void {
+    this.diagnostics = diagnostics;
+  }
+
+  mergeDiscoveredSessions(discovered: AgentSession[]): void {
+    const existingIds = new Set(this.sessions.map((session) => session.id));
+    this.sessions = [
+      ...this.sessions,
+      ...discovered.filter((session) => !existingIds.has(session.id))
+    ]
+      .sort((a, b) => Date.parse(b.lastSeenAt) - Date.parse(a.lastSeenAt))
+      .slice(0, 30);
+  }
+
   applyEvent(event: NormalizedEvent): AgentSession[] {
     this.events.push(event);
     if (this.events.length > 300) this.events = this.events.slice(-300);
@@ -75,6 +103,15 @@ export class IslandState {
       existing.eventCount += 1;
       existing.workspace = event.workspace ?? existing.workspace;
       existing.title = sessionTitle(event, existing.title);
+      existing.liveness = 'live';
+      existing.metadata = {
+        ...existing.metadata,
+        ...(event.metadata?.source ? { discoverySource: String(event.metadata.source) } : {}),
+        ...(typeof event.metadata?.threadId === 'string' ? { threadId: event.metadata.threadId } : {}),
+        ...(isRecord(event.metadata?.terminal)
+          ? { terminal: event.metadata.terminal }
+          : {})
+      };
     } else {
       this.sessions.unshift({
         id: sessionId,
@@ -84,7 +121,15 @@ export class IslandState {
         status: event.eventType,
         lastMessage: event.message ?? event.title,
         lastSeenAt: event.timestamp,
-        eventCount: 1
+        eventCount: 1,
+        liveness: 'live',
+        metadata: {
+          ...(event.metadata?.source ? { discoverySource: String(event.metadata.source) } : {}),
+          ...(typeof event.metadata?.threadId === 'string' ? { threadId: event.metadata.threadId } : {}),
+          ...(isRecord(event.metadata?.terminal)
+            ? { terminal: event.metadata.terminal }
+            : {})
+        }
       });
     }
     this.sessions = this.sessions
@@ -127,4 +172,8 @@ function sessionTitle(event: NormalizedEvent, fallback?: string): string {
   }
   if (event.workspace) return workspaceName(event.workspace);
   return fallback ?? event.title;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
