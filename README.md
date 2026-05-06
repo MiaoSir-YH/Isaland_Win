@@ -1,6 +1,6 @@
-# Vibe Island Windows
+# Isaland_Win
 
-Windows private prototype of an AI agent status island.
+用于报告 AI 进度的灵动岛。
 
 ## Status
 
