@@ -1,0 +1,3 @@
+[submodule "references/open-vibe-island"]
+	path = references/open-vibe-island
+	url = https://github.com/Octane0411/open-vibe-island.git

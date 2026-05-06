@@ -2,6 +2,16 @@
 
 用于报告 AI 进度的灵动岛。
 
+## Reference
+
+This project references [Octane0411/open-vibe-island](https://github.com/Octane0411/open-vibe-island).
+
+Clone with the reference project:
+
+```powershell
+git clone --recurse-submodules https://github.com/MiaoSir-YH/Isaland_Win.git
+```
+
 ## Status
 
 - Top-center always-on-top island window.
