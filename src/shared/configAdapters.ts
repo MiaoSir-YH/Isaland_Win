@@ -12,6 +12,7 @@ interface AdapterSpec {
   configPath: (home: string) => string;
   commandCandidates: string[];
   events: string[];
+  runtimeAgent?: Exclude<AgentId, 'unknown'>;
   experimental?: boolean;
   note?: string;
 }
@@ -27,12 +28,21 @@ const ADAPTERS: AdapterSpec[] = [
     note: 'Codex hooks are experimental on Windows; tool-level events may depend on the installed CLI version.'
   },
   {
-    agent: 'claude',
-    name: 'Claude Desktop / Code',
-    configPath: resolveClaudeConfigPath,
+    agent: 'claude-desktop',
+    name: 'Claude Desktop',
+    configPath: getClaudeDesktopConfigPath,
+    commandCandidates: [],
+    runtimeAgent: 'claude',
+    events: ['PreToolUse', 'PermissionRequest', 'PostToolUse', 'Notification', 'Stop', 'UserPromptSubmit']
+  },
+  {
+    agent: 'claude-cli',
+    name: 'Claude CLI',
+    configPath: getClaudeCliConfigPath,
     commandCandidates: ['claude'],
+    runtimeAgent: 'claude',
     events: ['PreToolUse', 'PermissionRequest', 'PostToolUse', 'Notification', 'Stop', 'UserPromptSubmit'],
-    note: 'Claude Desktop 3p config is preferred when AppData\\Local\\Claude-3p is present; otherwise Vibe Island falls back to ~/.claude/settings.json.'
+    note: 'Claude CLI hooks and the optional Claude statusLine bridge are stored in ~/.claude/settings.json.'
   },
   {
     agent: 'gemini',
@@ -120,6 +130,7 @@ export async function detectAgents(home = homedir(), helperCommand?: string): Pr
 export async function installHook(agent: AgentId, helperCommand: string, home = homedir()): Promise<HookInstallResult> {
   const adapter = requireAdapter(agent);
   const configPath = adapter.configPath(home);
+  const runtimeAgent = adapter.runtimeAgent ?? adapter.agent;
   if (adapter.agent === 'kimi') return installKimiHook(adapter, helperCommand, home);
   if (adapter.agent === 'opencode') return installOpenCodePlugin(adapter, helperCommand, home);
   const existing = await readJsonFile(configPath);
@@ -130,14 +141,14 @@ export async function installHook(agent: AgentId, helperCommand: string, home = 
     next.hooks = typeof next.hooks === 'object' && next.hooks !== null && !Array.isArray(next.hooks) ? next.hooks : {};
     for (const event of adapter.events) {
       const hooks = arrayValue((next.hooks as Record<string, unknown>)[event]).filter((hook) => !isManagedHook(hook));
-      hooks.push(makeCodexHook(helperCommand, adapter.agent, event));
+      hooks.push(makeCodexHook(helperCommand, runtimeAgent, event));
       (next.hooks as Record<string, unknown>)[event] = hooks;
     }
   } else {
     next.hooks = typeof next.hooks === 'object' && next.hooks !== null && !Array.isArray(next.hooks) ? next.hooks : {};
     for (const event of adapter.events) {
       const hooks = arrayValue((next.hooks as Record<string, unknown>)[event]).filter((hook) => !isManagedHook(hook));
-      hooks.push(makeClaudeStyleHook(helperCommand, adapter.agent, event));
+      hooks.push(makeClaudeStyleHook(helperCommand, runtimeAgent, event));
       (next.hooks as Record<string, unknown>)[event] = hooks;
     }
   }
@@ -186,7 +197,7 @@ export async function installClaudeStatusLine(
   const currentStatusLine = existing.statusLine;
   if (currentStatusLine && !isManagedHook(currentStatusLine)) {
     return {
-      agent: 'claude',
+      agent: 'claude-cli',
       configPath,
       installed: false,
       changed: false,
@@ -206,7 +217,7 @@ export async function installClaudeStatusLine(
   const backupPath = changed ? await backupFile(configPath) : undefined;
   if (changed) await writeJsonFile(configPath, next);
   return {
-    agent: 'claude',
+    agent: 'claude-cli',
     configPath,
     backupPath,
     installed: true,
@@ -220,7 +231,7 @@ export async function uninstallClaudeStatusLine(home = homedir()): Promise<HookI
   const existing = await readJsonFile(configPath);
   if (!existing.statusLine || !isManagedHook(existing.statusLine)) {
     return {
-      agent: 'claude',
+      agent: 'claude-cli',
       configPath,
       installed: false,
       changed: false,
@@ -233,7 +244,7 @@ export async function uninstallClaudeStatusLine(home = homedir()): Promise<HookI
   const backupPath = await backupFile(configPath);
   await writeJsonFile(configPath, next);
   return {
-    agent: 'claude',
+    agent: 'claude-cli',
     configPath,
     backupPath,
     installed: false,
@@ -247,9 +258,11 @@ export function buildHelperCommand(helperPath: string, agent: AgentId, event: st
   return `node "${escapedPath}" --agent ${agent} --event ${event} --managed-by ${MANAGED_MARKER}`;
 }
 
-function resolveClaudeConfigPath(home: string): string {
-  const desktopDir = join(home, 'AppData', 'Local', 'Claude-3p');
-  if (existsSync(desktopDir)) return join(desktopDir, 'claude_desktop_config.json');
+function getClaudeDesktopConfigPath(home: string): string {
+  return join(home, 'AppData', 'Local', 'Claude-3p', 'claude_desktop_config.json');
+}
+
+function getClaudeCliConfigPath(home: string): string {
   return join(home, '.claude', 'settings.json');
 }
 

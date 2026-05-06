@@ -36,8 +36,8 @@ describe('config adapters', () => {
       'utf8'
     );
 
-    const first = await installHook('claude', 'O:\\w_Island\\scripts\\vibe-island-hook.mjs', home);
-    const second = await installHook('claude', 'O:\\w_Island\\scripts\\vibe-island-hook.mjs', home);
+    const first = await installHook('claude-cli', 'O:\\w_Island\\scripts\\vibe-island-hook.mjs', home);
+    const second = await installHook('claude-cli', 'O:\\w_Island\\scripts\\vibe-island-hook.mjs', home);
     const installed = JSON.parse(await readFile(settingsPath, 'utf8'));
 
     expect(first.installed).toBe(true);
@@ -126,7 +126,7 @@ describe('config adapters', () => {
       'utf8'
     );
 
-    const refreshed = await installHook('claude', 'O:\\w_Island\\scripts\\vibe-island-hook.mjs', home);
+    const refreshed = await installHook('claude-cli', 'O:\\w_Island\\scripts\\vibe-island-hook.mjs', home);
     const installed = JSON.parse(await readFile(settingsPath, 'utf8'));
 
     expect(refreshed.installed).toBe(true);
@@ -145,15 +145,15 @@ describe('config adapters', () => {
 
   it('uninstalls only managed hooks', async () => {
     const settingsPath = join(home, '.claude', 'settings.json');
-    await installHook('claude', 'O:\\w_Island\\scripts\\vibe-island-hook.mjs', home);
-    await uninstallHook('claude', home);
+    await installHook('claude-cli', 'O:\\w_Island\\scripts\\vibe-island-hook.mjs', home);
+    await uninstallHook('claude-cli', home);
     const uninstalled = JSON.parse(await readFile(settingsPath, 'utf8'));
 
     expect(JSON.stringify(uninstalled)).not.toContain('vibe-island-hook');
     expect(uninstalled.hooks).toEqual({});
   });
 
-  it('prefers Claude Desktop 3p config when present', async () => {
+  it('installs Claude Desktop hooks into the Desktop 3p config', async () => {
     const desktopConfigPath = join(home, 'AppData', 'Local', 'Claude-3p', 'claude_desktop_config.json');
     const legacySettingsPath = join(home, '.claude', 'settings.json');
     await mkdir(dirname(desktopConfigPath), { recursive: true });
@@ -171,7 +171,7 @@ describe('config adapters', () => {
       'utf8'
     );
 
-    const result = await installHook('claude', 'O:\\w_Island\\scripts\\vibe-island-hook.mjs', home);
+    const result = await installHook('claude-desktop', 'O:\\w_Island\\scripts\\vibe-island-hook.mjs', home);
     const installed = JSON.parse(await readFile(desktopConfigPath, 'utf8'));
 
     expect(result.configPath).toBe(desktopConfigPath);
@@ -179,6 +179,21 @@ describe('config adapters', () => {
     expect(installed.mcpServers.gbrain.command).toBe('O:/CCTest/tools/gbrain.cmd');
     expect(JSON.stringify(installed).match(/vibe-island-hook/g)?.length).toBe(6);
     expect(existsSync(legacySettingsPath)).toBe(false);
+  });
+
+  it('installs Claude CLI hooks into the Claude CLI settings file even when Desktop config exists', async () => {
+    const desktopConfigPath = join(home, 'AppData', 'Local', 'Claude-3p', 'claude_desktop_config.json');
+    const cliSettingsPath = join(home, '.claude', 'settings.json');
+    await mkdir(dirname(desktopConfigPath), { recursive: true });
+    await writeFile(desktopConfigPath, JSON.stringify({ deploymentMode: '3p' }), 'utf8');
+
+    const result = await installHook('claude-cli', 'O:\\w_Island\\scripts\\vibe-island-hook.mjs', home);
+    const installed = JSON.parse(await readFile(cliSettingsPath, 'utf8'));
+
+    expect(result.configPath).toBe(cliSettingsPath);
+    expect(existsSync(desktopConfigPath)).toBe(true);
+    expect(JSON.stringify(installed).match(/vibe-island-hook/g)?.length).toBe(6);
+    expect(JSON.stringify(installed)).toContain('--agent claude');
   });
 
   it('installs Cursor hooks without overwriting unrelated hook entries', async () => {
@@ -267,6 +282,10 @@ describe('config adapters', () => {
     const detected = await detectAgents(home);
     const byId = Object.fromEntries(detected.map((agent) => [agent.id, agent]));
 
+    expect(byId['claude-desktop'].configPath).toBe(
+      join(home, 'AppData', 'Local', 'Claude-3p', 'claude_desktop_config.json')
+    );
+    expect(byId['claude-cli'].configPath).toBe(join(home, '.claude', 'settings.json'));
     expect(byId.qoder.configPath).toBe(join(home, '.qoder', 'settings.json'));
     expect(byId.qwen.configPath).toBe(join(home, '.qwen', 'settings.json'));
     expect(byId.factory.configPath).toBe(join(home, '.factory', 'settings.json'));
@@ -290,6 +309,7 @@ describe('config adapters', () => {
     const blocked = await installClaudeStatusLine('node vibe-island-statusline.mjs', home);
     const preserved = JSON.parse(await readFile(settingsPath, 'utf8'));
 
+    expect(blocked.agent).toBe('claude-cli');
     expect(blocked.changed).toBe(false);
     expect(blocked.installed).toBe(false);
     expect(preserved.statusLine.command).toBe('node custom-statusline.js');
@@ -302,6 +322,7 @@ describe('config adapters', () => {
     const removed = await uninstallClaudeStatusLine(home);
     const settings = JSON.parse(await readFile(settingsPath, 'utf8'));
 
+    expect(installed.agent).toBe('claude-cli');
     expect(installed.installed).toBe(true);
     expect(removed.changed).toBe(true);
     expect(settings.statusLine).toBeUndefined();

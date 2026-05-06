@@ -151,6 +151,8 @@ const soundNames: Array<{ id: AppConfig['sound']['name']; label: string }> = [
 const agentLabels: Record<AgentId, string> = {
   codex: 'Codex',
   claude: 'Claude',
+  'claude-desktop': 'Claude Desktop',
+  'claude-cli': 'Claude CLI',
   gemini: 'Gemini',
   opencode: 'OpenCode',
   cursor: 'Cursor',
@@ -184,8 +186,8 @@ const dictionaries = {
       configMissing: '未检测到本机配置目录',
       install: '安装',
       uninstall: '卸载',
-      claudeStatusLine: 'Claude statusLine',
-      claudeStatusLineDescription: '安装受管状态栏桥接；检测到用户自定义配置时不会覆盖。',
+      claudeStatusLine: 'Claude CLI statusLine',
+      claudeStatusLineDescription: '安装到 ~/.claude/settings.json 的受管状态栏桥接；检测到用户自定义配置时不会覆盖。',
       preferences: '偏好',
       language: '语言',
       startAtLogin: '开机启动',
@@ -259,8 +261,8 @@ const dictionaries = {
       configMissing: 'Local config directory was not detected',
       install: 'Install',
       uninstall: 'Uninstall',
-      claudeStatusLine: 'Claude statusLine',
-      claudeStatusLineDescription: 'Install a managed status line bridge; existing custom status lines are not overwritten.',
+      claudeStatusLine: 'Claude CLI statusLine',
+      claudeStatusLineDescription: 'Install a managed status line bridge in ~/.claude/settings.json; existing custom status lines are not overwritten.',
       preferences: 'Preferences',
       language: 'Language',
       startAtLogin: 'Start at login',
@@ -1721,6 +1723,7 @@ function EventList({ events }: { events: NormalizedEvent[] }): JSX.Element {
 function SettingsView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
   const [busyAgent, setBusyAgent] = useState<AgentId | null>(null);
   const [message, setMessage] = useState<string>('');
+  const [liveAgents, setLiveAgents] = useState<AgentDescriptor[]>(snapshot.agents);
   const [activeSection, setActiveSection] = useState<SettingsSectionId>('hooks');
   const [settingsMaximized, setSettingsMaximized] = useState(false);
   const [settingsDragActive, setSettingsDragActive] = useState(false);
@@ -1734,7 +1737,7 @@ function SettingsView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
   const settingsDragStartedRef = useRef(false);
   const settingsDragStartingRef = useRef(false);
   const activeEvents = useMemo(() => snapshot.events.slice(0, 8), [snapshot.events]);
-  const installedAgents = snapshot.agents.filter((agent) => agent.hookInstalled).length;
+  const installedAgents = liveAgents.filter((agent) => agent.hookInstalled).length;
   const activeSectionMeta = settingsSections.find((section) => section.id === activeSection) ?? settingsSections[0];
   const activeSectionText = dictionary.sections[activeSectionMeta.id];
   const remoteUrl = snapshot.runtime
@@ -1742,6 +1745,10 @@ function SettingsView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
     : snapshot.config.remote.enabled
       ? dictionary.labels.remoteWaiting
       : dictionary.labels.remoteDisabled;
+
+  useEffect(() => {
+    setLiveAgents(snapshot.agents);
+  }, [snapshot.agents]);
 
   useEffect(() => {
     let mounted = true;
@@ -1756,6 +1763,17 @@ function SettingsView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
       unsubscribe();
     };
   }, []);
+
+  useEffect(() => {
+    if (activeSection !== 'hooks') return undefined;
+    void window.vibeIsland
+      .refreshAgents()
+      .then((agents) => setLiveAgents(agents))
+      .catch((error) => {
+        setMessage(error instanceof Error ? error.message : String(error));
+      });
+    return undefined;
+  }, [activeSection]);
 
   useEffect(() => {
     if (!settingsDragActive) return undefined;
@@ -1796,14 +1814,26 @@ function SettingsView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
   async function toggleHook(agent: AgentDescriptor): Promise<void> {
     setBusyAgent(agent.id);
     try {
-      const result = agent.hookInstalled
-        ? await window.vibeIsland.uninstallHook(agent.id)
-        : await window.vibeIsland.installHook(agent.id);
+      const result = await window.vibeIsland.toggleHook(agent.id);
+      setLiveAgents(await window.vibeIsland.refreshAgents());
       setMessage(result.message);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     } finally {
       setBusyAgent(null);
+    }
+  }
+
+  async function openAgentConfig(agent: AgentDescriptor): Promise<void> {
+    if (!agent.configPath) {
+      setMessage(dictionary.labels.configMissing);
+      return;
+    }
+    try {
+      const result = await window.vibeIsland.openPath(agent.configPath);
+      setMessage(result || `${agent.name} 配置文件已打开。`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -1951,7 +1981,7 @@ function SettingsView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
                 <section className="settings-section wide">
                   <SectionTitle icon={<Activity size={18} />} title="Agent Hooks" />
                   <div className="agent-list">
-                    {snapshot.agents.map((agent, index) => (
+                    {liveAgents.map((agent, index) => (
                       <article
                         className="agent-row"
                         key={agent.id}
@@ -1973,6 +2003,15 @@ function SettingsView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
                             aria-label={`推送 ${agent.name} 测试事件`}
                           >
                             <Terminal size={16} />
+                          </button>
+                          <button
+                            className="icon-button"
+                            type="button"
+                            onClick={() => void openAgentConfig(agent)}
+                            aria-label={`打开 ${agent.name} 配置文件`}
+                            disabled={!agent.configPath}
+                          >
+                            <ExternalLink size={16} />
                           </button>
                           <button
                             className={`toggle-button ${agent.hookInstalled ? 'active' : ''}`}

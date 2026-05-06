@@ -30,8 +30,15 @@ export function createBrowserPreviewApi(): VibeIslandApi {
         note: '浏览器预览模式使用模拟数据。'
       },
       {
-        id: 'claude',
-        name: 'Claude Code',
+        id: 'claude-desktop',
+        name: 'Claude Desktop',
+        detected: true,
+        hookInstalled: false,
+        configPath: '%USERPROFILE%\\AppData\\Local\\Claude-3p\\claude_desktop_config.json'
+      },
+      {
+        id: 'claude-cli',
+        name: 'Claude CLI',
         detected: true,
         hookInstalled: true,
         configPath: '%USERPROFILE%\\.claude\\settings.json'
@@ -202,6 +209,7 @@ export function createBrowserPreviewApi(): VibeIslandApi {
       emitSnapshot();
       return snapshot.config;
     },
+    refreshAgents: async () => snapshot.agents,
     installHook: async (agent: AgentId): Promise<HookInstallResult> => {
       snapshot = {
         ...snapshot,
@@ -214,6 +222,24 @@ export function createBrowserPreviewApi(): VibeIslandApi {
         installed: true,
         changed: true,
         message: '浏览器预览：已模拟安装 hook。'
+      };
+    },
+    toggleHook: async (agent: AgentId): Promise<HookInstallResult> => {
+      const current = snapshot.agents.find((item) => item.id === agent);
+      const nextInstalled = !current?.hookInstalled;
+      snapshot = {
+        ...snapshot,
+        agents: snapshot.agents.map((item) =>
+          item.id === agent ? { ...item, hookInstalled: nextInstalled } : item
+        )
+      };
+      emitSnapshot();
+      return {
+        agent,
+        configPath: current?.configPath ?? '',
+        installed: nextInstalled,
+        changed: true,
+        message: nextInstalled ? '浏览器预览：已模拟安装 hook。' : '浏览器预览：已模拟卸载 hook。'
       };
     },
     uninstallHook: async (agent: AgentId): Promise<HookInstallResult> => {
@@ -231,14 +257,14 @@ export function createBrowserPreviewApi(): VibeIslandApi {
       };
     },
     installClaudeStatusLine: async (): Promise<HookInstallResult> => ({
-      agent: 'claude',
+      agent: 'claude-cli',
       configPath: '%USERPROFILE%\\.claude\\settings.json',
       installed: true,
       changed: true,
       message: '浏览器预览：已模拟安装 Claude statusLine。'
     }),
     uninstallClaudeStatusLine: async (): Promise<HookInstallResult> => ({
-      agent: 'claude',
+      agent: 'claude-cli',
       configPath: '%USERPROFILE%\\.claude\\settings.json',
       installed: false,
       changed: true,

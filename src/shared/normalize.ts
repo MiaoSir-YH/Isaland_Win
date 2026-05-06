@@ -3,6 +3,8 @@ import type { AgentId, EventType, NormalizedEvent, PermissionRequest, Severity }
 const KNOWN_AGENTS = new Set<AgentId>([
   'codex',
   'claude',
+  'claude-desktop',
+  'claude-cli',
   'gemini',
   'opencode',
   'cursor',
@@ -175,7 +177,14 @@ function defaultTitle(
   toolName?: string,
   message?: string
 ): string {
-  const agentName = agent === 'unknown' ? 'Agent' : agent.charAt(0).toUpperCase() + agent.slice(1);
+  const agentName =
+    agent === 'unknown'
+      ? 'Agent'
+      : agent === 'claude-desktop'
+        ? 'Claude Desktop'
+        : agent === 'claude-cli'
+          ? 'Claude CLI'
+          : agent.charAt(0).toUpperCase() + agent.slice(1);
   if (eventType === 'tool-start' && toolName) return `${agentName} 正在使用 ${toolName}`;
   if (eventType === 'tool-end' && toolName) return `${agentName} 完成 ${toolName}`;
   if (eventType === 'permission') return `${agentName} 请求权限`;

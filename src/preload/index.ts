@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
   AgentId,
+  AgentDescriptor,
   AppConfig,
   AppSnapshot,
   DiagnosticsInfo,
@@ -46,6 +47,8 @@ const api = {
   updateConfig: (config: Partial<AppConfig>): Promise<AppConfig> => ipcRenderer.invoke('config:update', config),
   installHook: (agent: AgentId): Promise<HookInstallResult> => ipcRenderer.invoke('agents:install-hook', agent),
   uninstallHook: (agent: AgentId): Promise<HookInstallResult> => ipcRenderer.invoke('agents:uninstall-hook', agent),
+  toggleHook: (agent: AgentId): Promise<HookInstallResult> => ipcRenderer.invoke('agents:toggle-hook', agent),
+  refreshAgents: (): Promise<AgentDescriptor[]> => ipcRenderer.invoke('agents:refresh'),
   installClaudeStatusLine: (): Promise<HookInstallResult> => ipcRenderer.invoke('agents:install-claude-status-line'),
   uninstallClaudeStatusLine: (): Promise<HookInstallResult> => ipcRenderer.invoke('agents:uninstall-claude-status-line'),
   respondPermission: (response: PermissionResponse): Promise<void> => ipcRenderer.invoke('permission:respond', response),

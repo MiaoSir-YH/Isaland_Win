@@ -689,17 +689,35 @@ function registerIpc(paths: ReturnType<typeof makeStoragePaths>): void {
   });
 
   ipcMain.handle('agents:install-hook', async (_event, agent: AgentId) => {
-    const result = await installHook(agent, helperPath(), process.env.USERPROFILE);
-    state.setAgents(await detectAgents(process.env.USERPROFILE, helperPath()));
+    const result = await installHook(agent, helperPath(), getUserHomePath());
+    await refreshAgents();
     broadcastSnapshot();
     return result;
   });
 
   ipcMain.handle('agents:uninstall-hook', async (_event, agent: AgentId) => {
-    const result = await uninstallHook(agent, process.env.USERPROFILE);
-    state.setAgents(await detectAgents(process.env.USERPROFILE, helperPath()));
+    const result = await uninstallHook(agent, getUserHomePath());
+    await refreshAgents();
     broadcastSnapshot();
     return result;
+  });
+
+  ipcMain.handle('agents:toggle-hook', async (_event, agent: AgentId) => {
+    const agents = await refreshAgents();
+    const current = agents.find((item) => item.id === agent);
+    if (!current) throw new Error(`Unknown agent: ${agent}`);
+    const result = current.hookInstalled
+      ? await uninstallHook(agent, getUserHomePath())
+      : await installHook(agent, helperPath(), getUserHomePath());
+    await refreshAgents();
+    broadcastSnapshot();
+    return result;
+  });
+
+  ipcMain.handle('agents:refresh', async () => {
+    const agents = await refreshAgents();
+    broadcastSnapshot();
+    return agents;
   });
 
   ipcMain.handle('permission:respond', async (_event, response: PermissionResponse) => {
@@ -969,6 +987,16 @@ async function refreshManagedAgentHooks(home: string, helperCommand: string): Pr
 function statusLinePath(): string {
   if (app.isPackaged) return join(process.resourcesPath, 'scripts', 'vibe-island-statusline.mjs');
   return join(process.cwd(), 'scripts', 'vibe-island-statusline.mjs');
+}
+
+function getUserHomePath(): string {
+  return process.env.USERPROFILE ?? app.getPath('home');
+}
+
+async function refreshAgents(): Promise<ReturnType<typeof state.snapshot>['agents']> {
+  const agents = await detectAgents(getUserHomePath(), helperPath());
+  state.setAgents(agents);
+  return agents;
 }
 
 function summarizeReply(text: string): string {

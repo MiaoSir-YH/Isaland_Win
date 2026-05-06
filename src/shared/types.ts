@@ -1,6 +1,8 @@
 export type AgentId =
   | 'codex'
   | 'claude'
+  | 'claude-desktop'
+  | 'claude-cli'
   | 'gemini'
   | 'opencode'
   | 'cursor'
