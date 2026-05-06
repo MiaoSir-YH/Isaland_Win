@@ -981,9 +981,9 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
           {!panelMounted ? (
             <AnimatePresence initial={false}>
               {permissionNoticeVisible && permission ? (
-                <PermissionNotice request={permission} key={permission.id} />
+                <PermissionNotice request={permission} key="permission-notice" />
               ) : permissionNoticeVisible && mirroredPrompt ? (
-                <MirroredPermissionNotice notification={mirroredPrompt} key={mirroredPrompt.id} />
+                <MirroredPermissionNotice notification={mirroredPrompt} key="mirrored-permission-notice" />
               ) : null}
             </AnimatePresence>
           ) : null}
@@ -1136,6 +1136,11 @@ function PermissionNotice({ request }: { request: PermissionRequest }): JSX.Elem
   const [answer, setAnswer] = useState('');
   const [busyDecision, setBusyDecision] = useState<PermissionDecision | null>(null);
   const canSendTypedAnswer = request.kind === 'question' && answer.trim().length > 0;
+
+  useEffect(() => {
+    setAnswer('');
+    setBusyDecision(null);
+  }, [request.id]);
 
   async function respond(decision: PermissionDecision, selectedAnswer?: string): Promise<void> {
     setBusyDecision(decision);
@@ -1510,6 +1515,11 @@ function PermissionPanel({ request, compact = false }: { request: PermissionRequ
   const [busyDecision, setBusyDecision] = useState<PermissionDecision | null>(null);
   const kindLabel = getActionableKindLabel(request);
   const canSendTypedAnswer = request.kind === 'question' && answer.trim().length > 0;
+
+  useEffect(() => {
+    setAnswer('');
+    setBusyDecision(null);
+  }, [request.id]);
 
   async function respond(decision: PermissionDecision, selectedAnswer?: string): Promise<void> {
     setBusyDecision(decision);
