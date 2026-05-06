@@ -112,6 +112,7 @@ export function createBrowserPreviewApi(): VibeIslandApi {
       emitExpanded();
     },
     setIslandHovered: async () => undefined,
+    setIslandPeeking: async () => undefined,
     setIslandLayout: async () => undefined,
     openSettings: async () => {
       window.location.search = '?view=settings';

@@ -88,6 +88,8 @@ export interface AppConfig {
   sound: boolean;
   notificationStrategy: NotificationStrategy;
   showCodexReplies: boolean;
+  autoPeekIsland: boolean;
+  islandClickThrough: boolean;
   jumpTarget: 'workspace' | 'terminal' | 'none';
 }
 
@@ -127,5 +129,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   sound: false,
   notificationStrategy: 'focused',
   showCodexReplies: true,
+  autoPeekIsland: true,
+  islandClickThrough: false,
   jumpTarget: 'workspace'
 };

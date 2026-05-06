@@ -7,6 +7,7 @@ import {
   Menu,
   nativeImage,
   Notification,
+  powerMonitor,
   screen,
   shell,
   Tray
@@ -49,16 +50,24 @@ let codexReplyWatcher: CodexReplyWatcher | null = null;
 let state: IslandState;
 let islandExpanded = false;
 let islandHovered = false;
+let islandPeeking = false;
 let settingsManuallyMaximized = false;
 let settingsRestoreBounds: Electron.Rectangle | null = null;
 let settingsDragOffset: { x: number; y: number } | null = null;
 let settingsDragBounds: Electron.Rectangle | null = null;
 let settingsDragTimer: NodeJS.Timeout | null = null;
+let islandPositionTimer: NodeJS.Timeout | null = null;
+let islandSurfaceRefreshTimer: NodeJS.Timeout | null = null;
 let notificationClearTimer: NodeJS.Timeout | null = null;
 const eventDeduper = new EventDeduper();
 const ISLAND_COLLAPSED_SIZE = { width: 560, height: 68 };
 const ISLAND_EXPANDED_SIZE = { width: 560, height: 372 };
 const ISLAND_TOP_OFFSET = 4;
+const ISLAND_BAR_HEIGHT = 44;
+const ISLAND_SHELL_TOP_PADDING = 6;
+const ISLAND_PEEK_VISIBLE_HEIGHT = 6;
+const ISLAND_PEEK_ANIMATION_MS = 260;
+const ISLAND_TRANSPARENCY_REFRESH_DELAY_MS = 220;
 const SETTINGS_NORMAL_SIZE = { width: 1100, height: 760 };
 const SETTINGS_MIN_SIZE = { width: 940, height: 660 };
 let islandLayoutSize = { ...ISLAND_COLLAPSED_SIZE };
@@ -138,19 +147,28 @@ async function bootstrap(): Promise<void> {
   createTray();
   registerIpc(paths);
 
-  screen.on('display-metrics-changed', positionIsland);
-  screen.on('display-added', positionIsland);
-  screen.on('display-removed', positionIsland);
+  screen.on('display-metrics-changed', () => {
+    positionIsland();
+    scheduleIslandSurfaceRefresh();
+  });
+  screen.on('display-added', scheduleIslandSurfaceRefresh);
+  screen.on('display-removed', scheduleIslandSurfaceRefresh);
+  powerMonitor.on('resume', scheduleIslandSurfaceRefresh);
+  powerMonitor.on('unlock-screen', scheduleIslandSurfaceRefresh);
   app.on('activate', showIsland);
 }
 
 app.on('before-quit', () => {
   codexReplyWatcher?.close();
   if (ipcServer) void ipcServer.close();
+  stopIslandPositionAnimation();
+  clearIslandSurfaceRefreshTimer();
 });
 
+app.on('window-all-closed', () => undefined);
+
 function createIslandWindow(): void {
-  islandWindow = new BrowserWindow({
+  const window = new BrowserWindow({
     width: ISLAND_COLLAPSED_SIZE.width,
     height: ISLAND_COLLAPSED_SIZE.height,
     minWidth: ISLAND_COLLAPSED_SIZE.width,
@@ -171,22 +189,26 @@ function createIslandWindow(): void {
       sandbox: false
     }
   });
+  islandWindow = window;
 
-  islandWindow.setBackgroundColor('#00000000');
-  islandWindow.setAlwaysOnTop(true, 'screen-saver');
-  islandWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  window.setBackgroundColor('#00000000');
+  window.setAlwaysOnTop(true, 'screen-saver');
+  window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   updateIslandMouseInteractivity();
-  islandWindow.on('ready-to-show', () => {
+  window.on('ready-to-show', () => {
     positionIsland();
-    islandWindow?.showInactive();
+    window.showInactive();
   });
-  islandWindow.on('blur', () => {
+  window.on('blur', () => {
     if (!islandExpanded) return;
     islandHovered = false;
     setIslandExpanded(false);
   });
+  window.on('closed', () => {
+    if (islandWindow === window) islandWindow = null;
+  });
 
-  loadRenderer(islandWindow, 'island');
+  loadRenderer(window, 'island');
 }
 
 function createSettingsWindow(): BrowserWindow {
@@ -238,14 +260,21 @@ function loadRenderer(window: BrowserWindow, view: 'island' | 'settings'): void 
   }
 }
 
-function positionIsland(): void {
+function positionIsland(animated = false): void {
   if (!islandWindow || islandWindow.isDestroyed()) return;
-  islandWindow.setBounds(getIslandCanvasBounds(), false);
+  const nextBounds = getIslandCanvasBounds();
+  if (!animated) {
+    stopIslandPositionAnimation();
+    islandWindow.setBounds(nextBounds, false);
+    return;
+  }
+  animateIslandBounds(nextBounds);
 }
 
 function setIslandExpanded(expanded: boolean): void {
   if (!islandWindow || islandWindow.isDestroyed()) return;
   islandExpanded = expanded;
+  islandPeeking = false;
   if (!expanded) islandHovered = false;
   if (expanded) setIslandLayout(ISLAND_EXPANDED_SIZE);
   positionIsland();
@@ -259,24 +288,79 @@ function setIslandLayout(size: { width: number; height: number }): void {
     width: ISLAND_EXPANDED_SIZE.width,
     height: clamp(Math.round(size.height), ISLAND_COLLAPSED_SIZE.height, ISLAND_EXPANDED_SIZE.height)
   };
+  if (next.height > ISLAND_COLLAPSED_SIZE.height) islandPeeking = false;
   if (next.width === islandLayoutSize.width && next.height === islandLayoutSize.height) return;
   islandLayoutSize = next;
   positionIsland();
 }
 
+function setIslandPeeking(peeking: boolean): void {
+  if (!islandWindow || islandWindow.isDestroyed()) return;
+  const next = Boolean(peeking) && !islandExpanded && islandLayoutSize.height === ISLAND_COLLAPSED_SIZE.height;
+  if (next === islandPeeking) return;
+  islandPeeking = next;
+  if (!next) islandHovered = false;
+  positionIsland(true);
+  updateIslandMouseInteractivity();
+}
+
 function updateIslandMouseInteractivity(): void {
   if (!islandWindow || islandWindow.isDestroyed()) return;
-  islandWindow.setIgnoreMouseEvents(!islandExpanded && !islandHovered, { forward: true });
+  const clickThrough = state.getConfig().islandClickThrough;
+  islandWindow.setIgnoreMouseEvents(!islandExpanded && (clickThrough || !islandHovered), { forward: true });
 }
 
 function getIslandCanvasBounds(): Electron.Rectangle {
   const display = screen.getPrimaryDisplay();
+  const peekY =
+    display.workArea.y - ISLAND_BAR_HEIGHT - ISLAND_SHELL_TOP_PADDING + ISLAND_PEEK_VISIBLE_HEIGHT;
   return {
     width: islandLayoutSize.width,
     height: islandLayoutSize.height,
     x: Math.round(display.workArea.x + (display.workArea.width - islandLayoutSize.width) / 2),
-    y: Math.round(display.workArea.y + ISLAND_TOP_OFFSET)
+    y: Math.round(islandPeeking ? peekY : display.workArea.y + ISLAND_TOP_OFFSET)
   };
+}
+
+function animateIslandBounds(targetBounds: Electron.Rectangle): void {
+  if (!islandWindow || islandWindow.isDestroyed()) return;
+  stopIslandPositionAnimation();
+  const startBounds = islandWindow.getBounds();
+  const startedAt = Date.now();
+
+  islandPositionTimer = setInterval(() => {
+    if (!islandWindow || islandWindow.isDestroyed()) {
+      stopIslandPositionAnimation();
+      return;
+    }
+
+    const progress = clamp((Date.now() - startedAt) / ISLAND_PEEK_ANIMATION_MS, 0, 1);
+    const eased = 1 - Math.pow(1 - progress, 3);
+    islandWindow.setBounds(
+      {
+        x: Math.round(lerp(startBounds.x, targetBounds.x, eased)),
+        y: Math.round(lerp(startBounds.y, targetBounds.y, eased)),
+        width: targetBounds.width,
+        height: targetBounds.height
+      },
+      false
+    );
+
+    if (progress >= 1) {
+      stopIslandPositionAnimation();
+      islandWindow.setBounds(targetBounds, false);
+    }
+  }, 16);
+}
+
+function stopIslandPositionAnimation(): void {
+  if (!islandPositionTimer) return;
+  clearInterval(islandPositionTimer);
+  islandPositionTimer = null;
+}
+
+function lerp(start: number, end: number, progress: number): number {
+  return start + (end - start) * progress;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -306,8 +390,39 @@ function createTrayIcon(): Electron.NativeImage {
 
 function showIsland(): void {
   if (!islandWindow || islandWindow.isDestroyed()) createIslandWindow();
+  const wasPeeking = islandPeeking;
+  setIslandPeeking(false);
   islandWindow?.showInactive();
-  positionIsland();
+  if (!wasPeeking) positionIsland();
+}
+
+function scheduleIslandSurfaceRefresh(): void {
+  clearIslandSurfaceRefreshTimer();
+  islandSurfaceRefreshTimer = setTimeout(() => {
+    islandSurfaceRefreshTimer = null;
+    recreateIslandWindowForTransparency();
+  }, ISLAND_TRANSPARENCY_REFRESH_DELAY_MS);
+}
+
+function clearIslandSurfaceRefreshTimer(): void {
+  if (!islandSurfaceRefreshTimer) return;
+  clearTimeout(islandSurfaceRefreshTimer);
+  islandSurfaceRefreshTimer = null;
+}
+
+function recreateIslandWindowForTransparency(): void {
+  stopIslandPositionAnimation();
+  islandExpanded = false;
+  islandHovered = false;
+  islandPeeking = false;
+  islandLayoutSize = { ...ISLAND_COLLAPSED_SIZE };
+
+  const previous = islandWindow;
+  createIslandWindow();
+  if (previous && !previous.isDestroyed()) {
+    previous.hide();
+    previous.destroy();
+  }
 }
 
 function openSettings(): void {
@@ -493,6 +608,9 @@ function registerIpc(paths: ReturnType<typeof makeStoragePaths>): void {
     islandHovered = Boolean(hovered);
     updateIslandMouseInteractivity();
   });
+  ipcMain.handle('island:set-peeking', (_event, peeking: boolean) => {
+    setIslandPeeking(Boolean(peeking));
+  });
   ipcMain.handle('island:set-layout', (_event, size: { width: number; height: number }) => {
     setIslandLayout(size);
   });
@@ -515,6 +633,7 @@ function registerIpc(paths: ReturnType<typeof makeStoragePaths>): void {
       clearActiveNotification();
     }
     app.setLoginItemSettings({ openAtLogin: next.startAtLogin });
+    updateIslandMouseInteractivity();
     await saveConfig(paths, next);
     broadcastSnapshot();
     return next;

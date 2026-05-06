@@ -159,6 +159,7 @@ input:focus-visible {
   min-height: 44px;
   padding: 8px 14px;
   transform: translateZ(0);
+  transition: opacity 160ms ease, transform 220ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .island-bar:hover .surface-chrome {
@@ -367,6 +368,43 @@ input:focus-visible {
 
 .state-collapsing .surface-chrome {
   box-shadow: 0 5px 14px rgba(15, 23, 42, 0.1);
+}
+
+.state-peeking .surface-chrome {
+  background: #070b18;
+  border-color: rgba(20, 184, 166, 0.5);
+  box-shadow:
+    0 0 0 1px rgba(20, 184, 166, 0.1),
+    0 0 14px rgba(20, 184, 166, 0.24);
+}
+
+.state-peeking .surface-chrome::before {
+  border-color: rgba(45, 212, 191, 0.22);
+  box-shadow: 0 0 12px rgba(45, 212, 191, 0.2);
+}
+
+.state-peeking .island-content {
+  opacity: 0;
+  transform: translateY(-8px);
+  pointer-events: none;
+}
+
+.state-peeking .island-countdown,
+.state-peeking .island-idle-light {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.island-card.peek-compressing .surface-chrome {
+  animation: peek-dot-compress 240ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.island-card.peek-peeking .surface-chrome {
+  animation: peek-dot-breathe 2.4s ease-in-out infinite;
+}
+
+.island-card.peek-revealing .surface-chrome {
+  animation: peek-dot-reveal 200ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 .tone-completed .agent-dot {
@@ -614,8 +652,7 @@ input:focus-visible {
 .island-panel {
   position: relative;
   left: 4px;
-  display: grid;
-  gap: 10px;
+  display: block;
   width: calc(100% - 8px);
   max-width: none;
   margin-left: 0;
@@ -636,23 +673,34 @@ input:focus-visible {
   transform-origin: top center;
   transform: translateZ(0);
   backface-visibility: hidden;
+  will-change: height, transform, opacity;
+}
+
+.island-panel-content {
+  display: grid;
+  gap: 10px;
+  min-height: 100%;
   will-change: transform, opacity;
 }
 
-.island-panel > * {
+.island-panel-content > * {
   animation: panel-item-in 340ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
-.island-panel > *:nth-child(1) {
+.island-panel-content > *:nth-child(1) {
   animation-delay: 70ms;
 }
 
-.island-panel > *:nth-child(2) {
+.island-panel-content > *:nth-child(2) {
   animation-delay: 105ms;
 }
 
-.island-panel > *:nth-child(3) {
+.island-panel-content > *:nth-child(3) {
   animation-delay: 140ms;
+}
+
+.island-card.phase-collapsing .island-panel-content > * {
+  animation: none;
 }
 
 .agent-dot {
@@ -959,6 +1007,43 @@ input:focus-visible {
   to {
     stroke-dashoffset: -100;
     opacity: 0.28;
+  }
+}
+
+@keyframes peek-dot-compress {
+  0% {
+    filter: brightness(1);
+  }
+
+  100% {
+    filter: brightness(1.08);
+  }
+}
+
+@keyframes peek-dot-breathe {
+  0%,
+  100% {
+    filter: brightness(1);
+    box-shadow:
+      0 0 0 1px rgba(20, 184, 166, 0.1),
+      0 0 12px rgba(20, 184, 166, 0.22);
+  }
+
+  50% {
+    filter: brightness(1.12);
+    box-shadow:
+      0 0 0 1px rgba(20, 184, 166, 0.16),
+      0 0 18px rgba(20, 184, 166, 0.32);
+  }
+}
+
+@keyframes peek-dot-reveal {
+  0% {
+    filter: brightness(1.12);
+  }
+
+  100% {
+    filter: brightness(1);
   }
 }
 

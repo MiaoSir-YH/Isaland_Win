@@ -43,10 +43,29 @@ const ISLAND_NOTICE_CANVAS_HEIGHT = 140;
 const ISLAND_CANVAS_WIDTH = 560;
 const ISLAND_VISUAL_MAX_WIDTH = 520;
 const ISLAND_PANEL_CANVAS_HEIGHT = 372;
-const ISLAND_LAYOUT_SHRINK_DELAY_MS = 260;
-const ISLAND_COLLAPSE_STATE_MS = 240;
+const ISLAND_PANEL_VISUAL_HEIGHT = 296;
+const ISLAND_PANEL_EXPAND_MS = 300;
+const ISLAND_PANEL_COLLAPSE_MS = 280;
+const ISLAND_NOTICE_COLLAPSE_MS = 240;
+const ISLAND_LAYOUT_SHRINK_DELAY_MS = 0;
 const ISLAND_CONTENT_PULSE_MS = 380;
 const ISLAND_AUTO_COLLAPSE_IDLE_MS = 8000;
+const ISLAND_AUTO_PEEK_IDLE_MS = 5000;
+const ISLAND_PEEK_REVEAL_HOVER_MS = 80;
+const ISLAND_PEEK_DOT_SIZE = 44;
+const ISLAND_PEEK_COMPRESS_MS = 320;
+const ISLAND_PEEK_REVEAL_TRAVEL_MS = 200;
+
+type IslandPeekPhase = 'visible' | 'compressing' | 'peeking' | 'revealing';
+type IslandPresentationPhase =
+  | 'collapsed'
+  | 'expanding'
+  | 'expanded'
+  | 'collapsing'
+  | 'permissionNotice'
+  | 'peekCompressing'
+  | 'peeking'
+  | 'peekRevealing';
 
 type CollapseReason =
   | 'manual-toggle'
@@ -61,9 +80,13 @@ type CollapseReason =
 const islandMotion = {
   micro: { duration: 0.12, ease: [0.16, 1, 0.3, 1] },
   content: { duration: 0.18, ease: [0.16, 1, 0.3, 1] },
-  widthSpring: { type: 'spring', stiffness: 540, damping: 48, mass: 0.86 },
+  widthSpring: { type: 'spring', stiffness: 620, damping: 54, mass: 0.78 },
+  peekWidth: { duration: 0.2, ease: [0.16, 1, 0.3, 1] },
   extensionSpring: { type: 'spring', stiffness: 460, damping: 42, mass: 0.82 },
-  panel: { duration: 0.42, ease: [0.16, 1, 0.3, 1] }
+  panelGrow: { duration: 0.3, ease: [0.16, 1, 0.3, 1] },
+  panelShrink: { duration: 0.24, ease: [0.4, 0, 0.2, 1] },
+  panelContentIn: { duration: 0.18, ease: [0.16, 1, 0.3, 1], delay: 0.07 },
+  panelContentOut: { duration: 0.1, ease: [0.4, 0, 0.2, 1] }
 } as const;
 
 type SettingsSectionId = 'hooks' | 'preferences' | 'appearance' | 'permissions' | 'events';
@@ -119,43 +142,75 @@ function App(): JSX.Element {
 }
 
 function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
-  const [expanded, setExpanded] = useState(false);
-  const [collapsing, setCollapsing] = useState(false);
+  const [presentationPhase, setPresentationPhase] = useState<IslandPresentationPhase>('collapsed');
   const cardRef = useRef<HTMLElement | null>(null);
   const barRef = useRef<HTMLButtonElement | null>(null);
   const islandLayoutRef = useRef({ width: ISLAND_CANVAS_WIDTH, height: ISLAND_BAR_CANVAS_HEIGHT });
   const layoutTimerRef = useRef<number | null>(null);
-  const collapseTimerRef = useRef<number | null>(null);
+  const presentationTimerRef = useRef<number | null>(null);
   const autoCollapseTimerRef = useRef<number | null>(null);
+  const autoPeekTimerRef = useRef<number | null>(null);
+  const peekRevealTimerRef = useRef<number | null>(null);
+  const peekTransitionTimerRef = useRef<number | null>(null);
   const contentPulseTimerRef = useRef<number | null>(null);
   const previousTextKeyRef = useRef<string | null>(null);
   const previousPermissionIdRef = useRef<string | undefined>(undefined);
   const previousNotificationIdRef = useRef<string | null>(null);
   const lastActivityAtRef = useRef(Date.now());
   const interactionHoldRef = useRef(false);
+  const peekingRef = useRef(false);
+  const presentationPhaseRef = useRef<IslandPresentationPhase>('collapsed');
+  const permissionRef = useRef<PermissionRequest | undefined>(undefined);
+  const idlePeekEligibleRef = useRef(false);
   const [contentChanging, setContentChanging] = useState(false);
   const active = snapshot.sessions[0];
   const notification = snapshot.notification;
   const permission = snapshot.permissions[0];
+  permissionRef.current = permission;
   const tone = getIslandTone(permission, notification, active);
   const workspaceLabel = active?.title ?? (notification?.workspace ? getWorkspaceName(notification.workspace) : undefined);
   const primaryText = permission ? permission.action : notification?.title ?? workspaceLabel ?? 'Vibe Island';
   const secondaryText = permission ? '需要权限' : notification?.message ?? formatSessionSummary(active);
   const islandWidth = estimateIslandWidth(primaryText, secondaryText);
-  const islandCardWidth = expanded ? ISLAND_VISUAL_MAX_WIDTH : islandWidth;
+  const panelMounted = isPanelPresentationPhase(presentationPhase);
+  const panelSettled = presentationPhase === 'expanded';
+  const expanded = panelMounted;
+  const peekPhase = getPeekPhaseFromPresentation(presentationPhase);
+  const peekVisualActive = isPeekPresentationPhase(presentationPhase);
+  const permissionNoticeVisible = Boolean(permission) && !panelMounted && !peekVisualActive;
+  const islandCardWidth = panelMounted ? ISLAND_VISUAL_MAX_WIDTH : islandWidth;
+  const islandVisualWidth = peekVisualActive ? ISLAND_PEEK_DOT_SIZE : islandCardWidth;
+  const islandWidthTransition = peekVisualActive ? islandMotion.peekWidth : islandMotion.widthSpring;
   const textKey = permission?.id ?? notification?.id ?? `${primaryText}:${secondaryText}`;
   const countdown = getIslandCountdown(permission, notification);
-  const islandLayout = getIslandLayout(expanded, Boolean(permission));
-  const animationState = getIslandAnimationState({ active, collapsing, expanded, notification, permission, tone });
+  const islandLayout = getIslandLayout(presentationPhase, Boolean(permission));
+  const autoPeekEnabled = snapshot.config.autoPeekIsland ?? true;
+  const idlePeekEligible =
+    autoPeekEnabled &&
+    !notification &&
+    !permission &&
+    !isSessionRunning(active);
+  idlePeekEligibleRef.current = idlePeekEligible;
+  const canAutoPeek = idlePeekEligible && presentationPhase === 'collapsed';
+  const animationState = getIslandAnimationState({
+    active,
+    notification,
+    presentationPhase,
+    permission,
+    tone
+  });
   const statusIconKey = `${tone}-${permission?.id ?? notification?.id ?? active?.status ?? 'idle'}`;
 
-  const beginCollapseState = useCallback(() => {
-    setCollapsing(true);
-    if (collapseTimerRef.current) window.clearTimeout(collapseTimerRef.current);
-    collapseTimerRef.current = window.setTimeout(() => {
-      setCollapsing(false);
-      collapseTimerRef.current = null;
-    }, ISLAND_COLLAPSE_STATE_MS);
+  const setPresentationPhaseState = useCallback((phase: IslandPresentationPhase) => {
+    presentationPhaseRef.current = phase;
+    setPresentationPhase(phase);
+  }, []);
+
+  const clearPresentationTimer = useCallback(() => {
+    if (presentationTimerRef.current) {
+      window.clearTimeout(presentationTimerRef.current);
+      presentationTimerRef.current = null;
+    }
   }, []);
 
   const clearAutoCollapseTimer = useCallback(() => {
@@ -165,35 +220,196 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
     }
   }, []);
 
+  const clearAutoPeekTimer = useCallback(() => {
+    if (autoPeekTimerRef.current) {
+      window.clearTimeout(autoPeekTimerRef.current);
+      autoPeekTimerRef.current = null;
+    }
+  }, []);
+
+  const clearPeekRevealTimer = useCallback(() => {
+    if (peekRevealTimerRef.current) {
+      window.clearTimeout(peekRevealTimerRef.current);
+      peekRevealTimerRef.current = null;
+    }
+  }, []);
+
+  const clearPeekTransitionTimer = useCallback(() => {
+    if (peekTransitionTimerRef.current) {
+      window.clearTimeout(peekTransitionTimerRef.current);
+      peekTransitionTimerRef.current = null;
+    }
+  }, []);
+
+  const setIslandPeekingState = useCallback(
+    (next: boolean, options?: { hovered?: boolean }) => {
+      const hovered = Boolean(options?.hovered);
+      clearPeekTransitionTimer();
+
+      if (next) {
+        if (peekingRef.current || presentationPhaseRef.current !== 'collapsed') return;
+        setPresentationPhaseState('peekCompressing');
+        peekTransitionTimerRef.current = window.setTimeout(() => {
+          peekTransitionTimerRef.current = null;
+          if (presentationPhaseRef.current !== 'peekCompressing') return;
+          peekingRef.current = true;
+          setPresentationPhaseState('peeking');
+          void window.vibeIsland.setIslandPeeking(true);
+        }, ISLAND_PEEK_COMPRESS_MS);
+        return;
+      }
+
+      if (presentationPhaseRef.current === 'peekCompressing') {
+        setPresentationPhaseState(permissionRef.current ? 'permissionNotice' : 'collapsed');
+        return;
+      }
+
+      if (!peekingRef.current && !isPeekPresentationPhase(presentationPhaseRef.current)) {
+        if (hovered) void window.vibeIsland.setIslandHovered(true);
+        return;
+      }
+
+      setPresentationPhaseState('peekRevealing');
+      void window.vibeIsland.setIslandPeeking(false);
+      peekTransitionTimerRef.current = window.setTimeout(() => {
+        peekTransitionTimerRef.current = null;
+        peekingRef.current = false;
+        setPresentationPhaseState(permissionRef.current ? 'permissionNotice' : 'collapsed');
+        const stillHovered = hovered && interactionHoldRef.current;
+        if (stillHovered) void window.vibeIsland.setIslandHovered(true);
+        if (!stillHovered && idlePeekEligibleRef.current && !interactionHoldRef.current) {
+          clearAutoPeekTimer();
+          autoPeekTimerRef.current = window.setTimeout(() => {
+            autoPeekTimerRef.current = null;
+            if (!interactionHoldRef.current && presentationPhaseRef.current === 'collapsed') setIslandPeekingState(true);
+          }, ISLAND_AUTO_PEEK_IDLE_MS);
+        }
+      }, ISLAND_PEEK_REVEAL_TRAVEL_MS);
+    },
+    [clearAutoPeekTimer, clearPeekTransitionTimer, setPresentationPhaseState]
+  );
+
+  const resetAutoPeekTimer = useCallback(() => {
+    clearAutoPeekTimer();
+    if (!canAutoPeek || interactionHoldRef.current || peekingRef.current || presentationPhaseRef.current !== 'collapsed') {
+      return;
+    }
+    autoPeekTimerRef.current = window.setTimeout(() => {
+      autoPeekTimerRef.current = null;
+      if (!interactionHoldRef.current) setIslandPeekingState(true);
+    }, ISLAND_AUTO_PEEK_IDLE_MS);
+  }, [canAutoPeek, clearAutoPeekTimer, setIslandPeekingState]);
+
+  const revealFromPeek = useCallback(
+    (hovered = false) => {
+      clearAutoPeekTimer();
+      clearPeekRevealTimer();
+      if (!peekingRef.current && !isPeekPresentationPhase(presentationPhaseRef.current)) {
+        if (hovered) void window.vibeIsland.setIslandHovered(true);
+        return;
+      }
+      setIslandPeekingState(false, { hovered });
+    },
+    [clearAutoPeekTimer, clearPeekRevealTimer, setIslandPeekingState]
+  );
+
+  const armPeekReveal = useCallback(
+    (x: number, y: number) => {
+      if (!peekingRef.current) return;
+      if (!isPointerInsideElement(barRef.current, x, y)) {
+        clearPeekRevealTimer();
+        return;
+      }
+      if (peekRevealTimerRef.current) return;
+      peekRevealTimerRef.current = window.setTimeout(() => {
+        peekRevealTimerRef.current = null;
+        if (isPointerInsideElement(barRef.current, x, y)) revealFromPeek(true);
+      }, ISLAND_PEEK_REVEAL_HOVER_MS);
+    },
+    [clearPeekRevealTimer, revealFromPeek]
+  );
+
   const syncHoverAfterCollapse = useCallback(() => {
     window.setTimeout(() => {
       void window.vibeIsland.setIslandHovered(isPointerInsideElement(barRef.current));
     }, 0);
   }, []);
 
+  const finishPanelCollapse = useCallback(() => {
+    presentationTimerRef.current = null;
+    setPresentationPhaseState(permissionRef.current ? 'permissionNotice' : 'collapsed');
+    void window.vibeIsland.setExpanded(false).then(syncHoverAfterCollapse);
+  }, [setPresentationPhaseState, syncHoverAfterCollapse]);
+
+  const startExpandSequence = useCallback(
+    (options?: { notifyMain?: boolean }) => {
+      const currentPhase = presentationPhaseRef.current;
+      if (currentPhase === 'expanded' || currentPhase === 'expanding') return;
+
+      clearAutoCollapseTimer();
+      clearPresentationTimer();
+      revealFromPeek(false);
+      lastActivityAtRef.current = Date.now();
+      setPresentationPhaseState('expanding');
+      void window.vibeIsland.setIslandLayout({ width: ISLAND_CANVAS_WIDTH, height: ISLAND_PANEL_CANVAS_HEIGHT });
+      if (options?.notifyMain !== false) void window.vibeIsland.setExpanded(true);
+
+      presentationTimerRef.current = window.setTimeout(() => {
+        presentationTimerRef.current = null;
+        if (presentationPhaseRef.current === 'expanding') {
+          setPresentationPhaseState('expanded');
+        }
+      }, ISLAND_PANEL_EXPAND_MS);
+    },
+    [clearAutoCollapseTimer, clearPresentationTimer, revealFromPeek, setPresentationPhaseState]
+  );
+
   const requestCollapse = useCallback(
     async (_reason: CollapseReason) => {
       clearAutoCollapseTimer();
-      if (expanded) beginCollapseState();
-      setExpanded(false);
-      await window.vibeIsland.setExpanded(false);
-      syncHoverAfterCollapse();
+      const currentPhase = presentationPhaseRef.current;
+      if (currentPhase === 'collapsing') {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, ISLAND_PANEL_COLLAPSE_MS));
+        return;
+      }
+
+      revealFromPeek(false);
+      if (!isPanelPresentationPhase(currentPhase)) {
+        setPresentationPhaseState(permissionRef.current ? 'permissionNotice' : 'collapsed');
+        await window.vibeIsland.setExpanded(false);
+        syncHoverAfterCollapse();
+        return;
+      }
+
+      clearPresentationTimer();
+      setPresentationPhaseState('collapsing');
+      presentationTimerRef.current = window.setTimeout(finishPanelCollapse, ISLAND_PANEL_COLLAPSE_MS);
+      await new Promise<void>((resolve) => window.setTimeout(resolve, ISLAND_PANEL_COLLAPSE_MS));
     },
-    [beginCollapseState, clearAutoCollapseTimer, expanded, syncHoverAfterCollapse]
+    [
+      clearAutoCollapseTimer,
+      clearPresentationTimer,
+      finishPanelCollapse,
+      revealFromPeek,
+      setPresentationPhaseState,
+      syncHoverAfterCollapse
+    ]
   );
 
   const resetAutoCollapseTimer = useCallback(() => {
     clearAutoCollapseTimer();
-    if (!expanded || interactionHoldRef.current) return;
+    if (presentationPhaseRef.current !== 'expanded' || interactionHoldRef.current) return;
     autoCollapseTimerRef.current = window.setTimeout(() => {
       void requestCollapse('auto-idle');
     }, ISLAND_AUTO_COLLAPSE_IDLE_MS);
-  }, [clearAutoCollapseTimer, expanded, requestCollapse]);
+  }, [clearAutoCollapseTimer, requestCollapse]);
 
   const markIslandActivity = useCallback(() => {
     lastActivityAtRef.current = Date.now();
+    if (peekingRef.current) revealFromPeek(true);
     resetAutoCollapseTimer();
-  }, [resetAutoCollapseTimer]);
+    resetAutoPeekTimer();
+  }, [resetAutoCollapseTimer, resetAutoPeekTimer, revealFromPeek]);
 
   const setInteractionHold = useCallback(
     (held: boolean) => {
@@ -201,42 +417,43 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
       lastActivityAtRef.current = Date.now();
       if (held) {
         clearAutoCollapseTimer();
+        clearAutoPeekTimer();
+        if (peekingRef.current) revealFromPeek(true);
         return;
       }
       resetAutoCollapseTimer();
+      resetAutoPeekTimer();
     },
-    [clearAutoCollapseTimer, resetAutoCollapseTimer]
+    [clearAutoCollapseTimer, clearAutoPeekTimer, resetAutoCollapseTimer, resetAutoPeekTimer, revealFromPeek]
   );
 
   useEffect(() => {
     const unsubscribe = window.vibeIsland.onExpanded((next) => {
       if (!next) {
         clearAutoCollapseTimer();
-        syncHoverAfterCollapse();
-      }
-      setExpanded((previous) => {
-        if (next) {
-          lastActivityAtRef.current = Date.now();
-          setCollapsing(false);
-          if (collapseTimerRef.current) {
-            window.clearTimeout(collapseTimerRef.current);
-            collapseTimerRef.current = null;
-          }
-        } else if (previous) {
-          beginCollapseState();
+        if (isPanelPresentationPhase(presentationPhaseRef.current)) {
+          void requestCollapse('window-blur');
+          return;
         }
-        return next;
-      });
+        setPresentationPhaseState(permissionRef.current ? 'permissionNotice' : 'collapsed');
+        syncHoverAfterCollapse();
+        return;
+      }
+      startExpandSequence({ notifyMain: false });
     });
     return unsubscribe;
-  }, [beginCollapseState, clearAutoCollapseTimer, syncHoverAfterCollapse]);
+  }, [clearAutoCollapseTimer, requestCollapse, setPresentationPhaseState, startExpandSequence, syncHoverAfterCollapse]);
 
   useEffect(() => {
     return () => {
-      if (collapseTimerRef.current) window.clearTimeout(collapseTimerRef.current);
+      if (presentationTimerRef.current) window.clearTimeout(presentationTimerRef.current);
       if (layoutTimerRef.current) window.clearTimeout(layoutTimerRef.current);
       if (autoCollapseTimerRef.current) window.clearTimeout(autoCollapseTimerRef.current);
+      if (autoPeekTimerRef.current) window.clearTimeout(autoPeekTimerRef.current);
+      if (peekRevealTimerRef.current) window.clearTimeout(peekRevealTimerRef.current);
+      if (peekTransitionTimerRef.current) window.clearTimeout(peekTransitionTimerRef.current);
       if (contentPulseTimerRef.current) window.clearTimeout(contentPulseTimerRef.current);
+      void window.vibeIsland.setIslandPeeking(false);
     };
   }, []);
 
@@ -289,7 +506,30 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
   }, [islandLayout.width, islandLayout.height]);
 
   useEffect(() => {
-    if (!expanded) {
+    if (!idlePeekEligible || interactionHoldRef.current) {
+      clearAutoPeekTimer();
+      revealFromPeek(false);
+      return undefined;
+    }
+
+    if (!canAutoPeek) return undefined;
+
+    resetAutoPeekTimer();
+
+    return clearAutoPeekTimer;
+  }, [canAutoPeek, clearAutoPeekTimer, idlePeekEligible, presentationPhase, resetAutoPeekTimer, revealFromPeek]);
+
+  useEffect(() => {
+    function handleMouseMove(event: MouseEvent): void {
+      armPeekReveal(event.clientX, event.clientY);
+    }
+
+    window.addEventListener('mousemove', handleMouseMove);
+    return () => window.removeEventListener('mousemove', handleMouseMove);
+  }, [armPeekReveal]);
+
+  useEffect(() => {
+    if (!panelSettled) {
       clearAutoCollapseTimer();
       return undefined;
     }
@@ -297,7 +537,7 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
     lastActivityAtRef.current = Date.now();
     resetAutoCollapseTimer();
     return clearAutoCollapseTimer;
-  }, [clearAutoCollapseTimer, expanded, resetAutoCollapseTimer]);
+  }, [clearAutoCollapseTimer, panelSettled, resetAutoCollapseTimer]);
 
   useEffect(() => {
     if (!expanded) return undefined;
@@ -340,6 +580,25 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
   }, [permission?.id, requestCollapse]);
 
   useEffect(() => {
+    if (permission && presentationPhaseRef.current === 'collapsed') {
+      setPresentationPhaseState('permissionNotice');
+      return undefined;
+    }
+
+    if (!permission && presentationPhaseRef.current === 'permissionNotice') {
+      clearPresentationTimer();
+      presentationTimerRef.current = window.setTimeout(() => {
+        presentationTimerRef.current = null;
+        if (!permissionRef.current && presentationPhaseRef.current === 'permissionNotice') {
+          setPresentationPhaseState('collapsed');
+        }
+      }, ISLAND_NOTICE_COLLAPSE_MS);
+    }
+
+    return undefined;
+  }, [clearPresentationTimer, permission, setPresentationPhaseState]);
+
+  useEffect(() => {
     const notificationId = notification?.id ?? null;
     const previousNotificationId = previousNotificationIdRef.current;
     if (
@@ -355,20 +614,15 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
   }, [expanded, notification?.id, requestCollapse]);
 
   async function toggleExpanded(): Promise<void> {
-    const next = !expanded;
-    if (!next) {
+    if (peekingRef.current) {
+      revealFromPeek(true);
+      return;
+    }
+    if (presentationPhaseRef.current === 'expanded' || presentationPhaseRef.current === 'expanding') {
       await requestCollapse('manual-toggle');
       return;
     }
-    clearAutoCollapseTimer();
-    lastActivityAtRef.current = Date.now();
-    setExpanded(next);
-    setCollapsing(false);
-    if (collapseTimerRef.current) {
-      window.clearTimeout(collapseTimerRef.current);
-      collapseTimerRef.current = null;
-    }
-    await window.vibeIsland.setExpanded(next);
+    startExpandSequence();
   }
 
   async function openSettingsFromIsland(): Promise<void> {
@@ -389,6 +643,10 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
   }
 
   function handlePointerMove(event: React.PointerEvent<HTMLElement>): void {
+    if (peekingRef.current) {
+      armPeekReveal(event.clientX, event.clientY);
+      return;
+    }
     if (expanded) {
       markIslandActivity();
       return;
@@ -398,14 +656,16 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
 
   return (
     <MotionConfig transition={islandMotion.widthSpring}>
-      <main className="island-shell">
+      <main className={`island-shell ${peekVisualActive ? 'peeking' : ''}`}>
         <motion.section
           ref={cardRef}
-          className={`island-card ${expanded ? 'expanded' : 'collapsed'} ${
+          className={`island-card ${panelMounted ? 'expanded' : 'collapsed'} phase-${presentationPhase} ${
+            peekVisualActive ? 'is-peeking' : ''
+          } peek-${peekPhase} ${
             contentChanging ? 'is-content-changing' : ''
           } state-${animationState} tone-${tone}`}
-          animate={{ width: islandCardWidth }}
-          transition={islandMotion.widthSpring}
+          animate={{ width: islandVisualWidth }}
+          transition={islandWidthTransition}
           onMouseEnter={(event) => {
             setInteractionHold(true);
             void window.vibeIsland.setIslandHovered(isPointerInsideElement(barRef.current, event.clientX, event.clientY));
@@ -432,13 +692,13 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
             transition={islandMotion.micro}
           >
             <span className="surface-chrome" aria-hidden="true" />
-            {animationState === 'idle' ? <IslandIdleLight width={islandCardWidth} /> : null}
+            {animationState === 'idle' ? <IslandIdleLight width={islandVisualWidth} /> : null}
             {countdown ? (
               <IslandCountdown
                 key={countdown.key}
                 durationMs={countdown.durationMs}
                 tone={tone}
-                width={islandCardWidth}
+                width={islandVisualWidth}
               />
             ) : null}
             <div className="island-content">
@@ -462,45 +722,66 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
           </motion.button>
 
           <AnimatePresence initial={false}>
-            {permission && !expanded ? (
+            {permissionNoticeVisible && permission ? (
               <PermissionNotice request={permission} key={permission.id} />
             ) : null}
           </AnimatePresence>
 
           <AnimatePresence initial={false}>
-            {expanded ? (
+            {panelMounted ? (
               <motion.section
                 key="island-panel"
                 className="island-panel"
                 aria-label="Vibe Island 控制面板"
                 initial={{ opacity: 0, height: 0, y: -10 }}
-                animate={{ opacity: 1, height: 'auto', y: 0 }}
+                animate={{
+                  opacity: presentationPhase === 'collapsing' ? 0 : 1,
+                  height: presentationPhase === 'collapsing' ? 0 : ISLAND_PANEL_VISUAL_HEIGHT,
+                  y: presentationPhase === 'collapsing' ? -8 : 0
+                }}
                 exit={{ opacity: 0, height: 0, y: -8 }}
-                transition={islandMotion.panel}
+                transition={{
+                  height: presentationPhase === 'collapsing' ? islandMotion.panelShrink : islandMotion.panelGrow,
+                  opacity:
+                    presentationPhase === 'collapsing' ? islandMotion.panelContentOut : islandMotion.panelContentIn,
+                  y: presentationPhase === 'collapsing' ? islandMotion.panelShrink : islandMotion.panelGrow
+                }}
               >
-                {permission ? <PermissionPanel request={permission} /> : null}
-                {!permission ? <SessionStrip sessions={snapshot.sessions} /> : null}
-                {!permission ? <EventList events={snapshot.events.slice(0, 2)} /> : null}
-                <div className="panel-actions">
-                  <button
-                    className="icon-button label-button"
-                    type="button"
-                    onPointerDown={handleSettingsPointerDown}
-                    onClick={handleSettingsClick}
-                  >
-                    <Settings size={16} />
-                    设置
-                  </button>
-                  <button
-                    className="icon-button label-button"
-                    type="button"
-                    onClick={() => window.vibeIsland.jumpWorkspace(active?.workspace)}
-                    disabled={!active?.workspace}
-                  >
-                    <ExternalLink size={16} />
-                    跳转
-                  </button>
-                </div>
+                <motion.div
+                  className="island-panel-content"
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{
+                    opacity: presentationPhase === 'collapsing' ? 0 : 1,
+                    y: presentationPhase === 'collapsing' ? -6 : 0
+                  }}
+                  transition={
+                    presentationPhase === 'collapsing' ? islandMotion.panelContentOut : islandMotion.panelContentIn
+                  }
+                >
+                  {permission ? <PermissionPanel request={permission} /> : null}
+                  {!permission ? <SessionStrip sessions={snapshot.sessions} /> : null}
+                  {!permission ? <EventList events={snapshot.events.slice(0, 2)} /> : null}
+                  <div className="panel-actions">
+                    <button
+                      className="icon-button label-button"
+                      type="button"
+                      onPointerDown={handleSettingsPointerDown}
+                      onClick={handleSettingsClick}
+                    >
+                      <Settings size={16} />
+                      设置
+                    </button>
+                    <button
+                      className="icon-button label-button"
+                      type="button"
+                      onClick={() => window.vibeIsland.jumpWorkspace(active?.workspace)}
+                      disabled={!active?.workspace}
+                    >
+                      <ExternalLink size={16} />
+                      跳转
+                    </button>
+                  </div>
+                </motion.div>
               </motion.section>
             ) : null}
           </AnimatePresence>
@@ -638,35 +919,61 @@ function estimateIslandWidth(primaryText: string, secondaryText: string): number
   return Math.max(320, Math.min(520, Math.round(contentWidth)));
 }
 
-function getIslandLayout(expanded: boolean, hasPermission: boolean): { width: number; height: number } {
-  if (expanded) {
+function isPanelPresentationPhase(phase: IslandPresentationPhase): boolean {
+  return phase === 'expanding' || phase === 'expanded' || phase === 'collapsing';
+}
+
+function isPeekPresentationPhase(phase: IslandPresentationPhase): boolean {
+  return phase === 'peekCompressing' || phase === 'peeking' || phase === 'peekRevealing';
+}
+
+function getPeekPhaseFromPresentation(phase: IslandPresentationPhase): IslandPeekPhase {
+  if (phase === 'peekCompressing') return 'compressing';
+  if (phase === 'peeking') return 'peeking';
+  if (phase === 'peekRevealing') return 'revealing';
+  return 'visible';
+}
+
+function getIslandLayout(
+  presentationPhase: IslandPresentationPhase,
+  hasPermission: boolean
+): { width: number; height: number } {
+  if (isPanelPresentationPhase(presentationPhase)) {
     return { width: ISLAND_CANVAS_WIDTH, height: ISLAND_PANEL_CANVAS_HEIGHT };
   }
   return {
     width: ISLAND_CANVAS_WIDTH,
-    height: hasPermission ? ISLAND_NOTICE_CANVAS_HEIGHT : ISLAND_BAR_CANVAS_HEIGHT
+    height:
+      hasPermission || presentationPhase === 'permissionNotice' ? ISLAND_NOTICE_CANVAS_HEIGHT : ISLAND_BAR_CANVAS_HEIGHT
   };
 }
 
-type IslandAnimationState = 'idle' | 'running' | 'notify' | 'permissionNotice' | 'complete' | 'expanded' | 'collapsing';
+type IslandAnimationState =
+  | 'idle'
+  | 'running'
+  | 'notify'
+  | 'permissionNotice'
+  | 'complete'
+  | 'expanded'
+  | 'collapsing'
+  | 'peeking';
 
 function getIslandAnimationState({
   active,
-  collapsing,
-  expanded,
   notification,
+  presentationPhase,
   permission,
   tone
 }: {
   active: AgentSession | undefined;
-  collapsing: boolean;
-  expanded: boolean;
   notification: NormalizedEvent | null;
+  presentationPhase: IslandPresentationPhase;
   permission: PermissionRequest | undefined;
   tone: IslandTone;
 }): IslandAnimationState {
-  if (collapsing) return 'collapsing';
-  if (expanded) return 'expanded';
+  if (presentationPhase === 'collapsing') return 'collapsing';
+  if (presentationPhase === 'expanding' || presentationPhase === 'expanded') return 'expanded';
+  if (isPeekPresentationPhase(presentationPhase)) return 'peeking';
   if (permission) return 'permissionNotice';
   if (tone === 'completed') return 'complete';
   if (notification) return 'notify';
@@ -1101,6 +1408,18 @@ function SettingsView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
                     label="Codex 回复提示"
                     checked={snapshot.config.showCodexReplies}
                     onChange={(checked) => updateConfig({ showCodexReplies: checked })}
+                  />
+                  <SettingToggle
+                    icon={<Layers size={17} />}
+                    label="空闲自动收起"
+                    checked={snapshot.config.autoPeekIsland}
+                    onChange={(checked) => updateConfig({ autoPeekIsland: checked })}
+                  />
+                  <SettingToggle
+                    icon={<PlugZap size={17} />}
+                    label="折叠态点击穿透"
+                    checked={snapshot.config.islandClickThrough}
+                    onChange={(checked) => updateConfig({ islandClickThrough: checked })}
                   />
                   <SettingToggle
                     icon={<MonitorUp size={17} />}
