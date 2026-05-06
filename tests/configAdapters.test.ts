@@ -30,8 +30,8 @@ describe('config adapters', () => {
       'utf8'
     );
 
-    const first = await installHook('claude', 'O:\\w_Isaland\\scripts\\vibe-island-hook.mjs', home);
-    const second = await installHook('claude', 'O:\\w_Isaland\\scripts\\vibe-island-hook.mjs', home);
+    const first = await installHook('claude', 'O:\\w_Island\\scripts\\vibe-island-hook.mjs', home);
+    const second = await installHook('claude', 'O:\\w_Island\\scripts\\vibe-island-hook.mjs', home);
     const installed = JSON.parse(await readFile(settingsPath, 'utf8'));
 
     expect(first.installed).toBe(true);
@@ -43,7 +43,7 @@ describe('config adapters', () => {
 
   it('uninstalls only managed hooks', async () => {
     const settingsPath = join(home, '.claude', 'settings.json');
-    await installHook('claude', 'O:\\w_Isaland\\scripts\\vibe-island-hook.mjs', home);
+    await installHook('claude', 'O:\\w_Island\\scripts\\vibe-island-hook.mjs', home);
     await uninstallHook('claude', home);
     const uninstalled = JSON.parse(await readFile(settingsPath, 'utf8'));
 
@@ -69,7 +69,7 @@ describe('config adapters', () => {
       'utf8'
     );
 
-    const result = await installHook('claude', 'O:\\w_Isaland\\scripts\\vibe-island-hook.mjs', home);
+    const result = await installHook('claude', 'O:\\w_Island\\scripts\\vibe-island-hook.mjs', home);
     const installed = JSON.parse(await readFile(desktopConfigPath, 'utf8'));
 
     expect(result.configPath).toBe(desktopConfigPath);

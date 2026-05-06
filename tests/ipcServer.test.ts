@@ -35,7 +35,7 @@ describe('IPC server', () => {
       body: JSON.stringify({
         type: 'PostToolUse',
         session_id: 'session-1',
-        cwd: 'O:\\w_Isaland',
+        cwd: 'O:\\w_Island',
         tool_name: 'Shell',
         tool_input: {
           command: 'npm test'
@@ -89,4 +89,3 @@ describe('IPC server', () => {
     expect(body.permission.decision).toBe('deny');
   });
 });
-

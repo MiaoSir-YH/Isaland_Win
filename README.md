@@ -1,4 +1,4 @@
-# Isaland_Win
+# Island_Win
 
 用于报告 AI 进度的灵动岛。
 
@@ -9,7 +9,7 @@ This project references [Octane0411/open-vibe-island](https://github.com/Octane0
 Clone with the reference project:
 
 ```powershell
-git clone --recurse-submodules https://github.com/MiaoSir-YH/Isaland_Win.git
+git clone --recurse-submodules https://github.com/MiaoSir-YH/Island_Win.git
 ```
 
 ## Status
@@ -46,7 +46,7 @@ The app writes runtime connection info to `%APPDATA%\Vibe Island\runtime.json`.
 Example event:
 
 ```powershell
-'{"hook_event_name":"PostToolUse","session_id":"smoke","cwd":"O:\\w_Isaland","tool_name":"Shell","tool_input":{"command":"npm test"}}' |
+'{"hook_event_name":"PostToolUse","session_id":"smoke","cwd":"O:\\w_Island","tool_name":"Shell","tool_input":{"command":"npm test"}}' |
   node scripts\vibe-island-hook.mjs --agent claude --event PostToolUse
 ```
 

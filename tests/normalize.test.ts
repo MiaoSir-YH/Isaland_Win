@@ -7,7 +7,7 @@ describe('normalizeEvent', () => {
       {
         hook_event_name: 'PreToolUse',
         session_id: 'abc',
-        cwd: 'O:\\w_Isaland',
+        cwd: 'O:\\w_Island',
         tool_name: 'Bash',
         tool_input: {
           command: 'npm test'
@@ -19,7 +19,7 @@ describe('normalizeEvent', () => {
     expect(event.agent).toBe('claude');
     expect(event.eventType).toBe('tool-start');
     expect(event.sessionId).toBe('abc');
-    expect(event.workspace).toBe('O:\\w_Isaland');
+    expect(event.workspace).toBe('O:\\w_Island');
     expect(event.toolName).toBe('Bash');
     expect(event.command).toBe('npm test');
   });
@@ -56,4 +56,3 @@ describe('normalizePermissionRequest', () => {
     expect(permission.timeoutMs).toBe(120000);
   });
 });
-
