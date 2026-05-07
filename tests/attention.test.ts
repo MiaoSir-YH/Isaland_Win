@@ -60,6 +60,37 @@ describe('island attention rules', () => {
     expect(shouldShowSystemNotification(event)).toBe(true);
   });
 
+  it('does not promote Claude idle input notifications', () => {
+    const event = normalizeEvent(
+      {
+        hook_event_name: 'Notification',
+        session_id: 's1',
+        message: 'Claude is waiting for your input',
+        notification_type: 'idle_prompt'
+      },
+      'claude'
+    );
+
+    expect(getIslandAttentionReason(event)).toBe('none');
+    expect(shouldPromoteWithStrategy(event, 'focused')).toBe(false);
+    expect(shouldAutoClearIslandNotification(event)).toBe(true);
+  });
+
+  it('still promotes explicit Claude input waiting notifications', () => {
+    const event = normalizeEvent(
+      {
+        hook_event_name: 'Notification',
+        session_id: 's1',
+        message: 'Claude is waiting for your input',
+        notification_type: 'input_waiting'
+      },
+      'claude'
+    );
+
+    expect(getIslandAttentionReason(event)).toBe('question');
+    expect(shouldPromoteWithStrategy(event, 'focused')).toBe(true);
+  });
+
   it('promotes non-interrupt session completion', () => {
     const event = normalizeEvent(
       {
@@ -71,6 +102,23 @@ describe('island attention rules', () => {
     );
 
     expect(getIslandAttentionReason(event)).toBe('completed');
+  });
+
+  it('does not classify review findings in final replies as questions', () => {
+    const event = normalizeEvent(
+      {
+        agent: 'codex',
+        eventType: 'session-stop',
+        title: '**Findings** [P1] input_waiting 被整体压掉会吞掉真实问题提示',
+        message: '当前把 Claude 的 input_waiting 和 idle_prompt 都视为低信号，会导致灵动岛不显示按钮。',
+        source: 'codex-reply-watcher',
+        phase: 'final_answer'
+      },
+      'codex'
+    );
+
+    expect(getIslandAttentionReason(event)).toBe('completed');
+    expect(shouldAutoClearIslandNotification(event)).toBe(true);
   });
 
   it('suppresses interrupt completion', () => {

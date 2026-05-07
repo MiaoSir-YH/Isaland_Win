@@ -5,9 +5,10 @@ export type IslandAttentionReason = 'none' | 'reply' | 'question' | 'completed' 
 export function getIslandAttentionReason(event: NormalizedEvent): IslandAttentionReason {
   if (isCodexReplyMirror(event)) return 'reply';
   if (event.severity === 'error' || event.eventType === 'error') return 'error';
-  if (isMirroredPermissionPrompt(event) || isMirroredQuestionPrompt(event)) return 'question';
-  if (isQuestionEvent(event)) return 'question';
+  if (isMirroredPermissionPrompt(event)) return 'question';
+  if (isMirroredInputWaitingPrompt(event)) return 'question';
   if (event.eventType === 'session-stop' && !isInterruptEvent(event)) return 'completed';
+  if (isQuestionEvent(event)) return 'question';
   return 'none';
 }
 
@@ -48,6 +49,8 @@ export function shouldShowSystemNotification(event: NormalizedEvent): boolean {
 }
 
 function isQuestionEvent(event: NormalizedEvent): boolean {
+  if (event.eventType !== 'notification' && event.eventType !== 'permission') return false;
+  if (isMirroredIdlePrompt(event)) return false;
   const name = metadataString(event, 'eventType', 'event_type', 'hook_event_name', 'type', 'name');
   const text = `${name ?? ''} ${event.title} ${event.message ?? ''}`.toLowerCase();
   return /question|ask|needs[\s_-]*input|input[\s_-]*request/.test(text) || /问题|提问|需要.*输入/.test(text);
@@ -60,11 +63,15 @@ function isMirroredPermissionPrompt(event: NormalizedEvent): boolean {
   return notificationType === 'permission_prompt' || /needs your permission|需要.*权限/.test(text);
 }
 
-function isMirroredQuestionPrompt(event: NormalizedEvent): boolean {
+function isMirroredInputWaitingPrompt(event: NormalizedEvent): boolean {
+  if (event.agent !== 'claude' || event.eventType !== 'notification') return false;
+  return metadataString(event, 'notification_type')?.toLowerCase() === 'input_waiting';
+}
+
+function isMirroredIdlePrompt(event: NormalizedEvent): boolean {
   if (event.agent !== 'claude' || event.eventType !== 'notification') return false;
   const notificationType = metadataString(event, 'notification_type')?.toLowerCase();
-  const text = `${event.title} ${event.message ?? ''}`.toLowerCase();
-  return notificationType === 'input_waiting' || /waiting for your input|等待.*输入/.test(text);
+  return notificationType === 'idle_prompt';
 }
 
 function isCodexReplyMirror(event: NormalizedEvent): boolean {

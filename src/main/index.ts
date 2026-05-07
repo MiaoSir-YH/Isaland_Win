@@ -33,7 +33,7 @@ import {
 import { createPermissionTimeoutResponse, getPermissionNoticeTimeoutMs } from '@shared/permission';
 import { startIpcServer, type IpcServerHandle } from './ipcServer';
 import { isFinalCodexReplyPhase, startCodexReplyWatcher, type CodexReplyWatcher } from './codexReplyWatcher';
-import { jumpToTerminalSession } from './jump';
+import { focusWindowsTerminal, jumpToTerminalSession, jumpToWorkspace, preciseJump } from './jump';
 import { startCodexAppServer, type CodexAppServerCoordinator } from './codexAppServer';
 import { makeDiagnostics } from './diagnostics';
 import { startRemoteServer, type RemoteServerHandle } from './remoteServer';
@@ -752,6 +752,14 @@ function registerIpc(paths: ReturnType<typeof makeStoragePaths>): void {
     const session = resolveJumpSession(jumpTarget);
     const configuredTarget = state.getConfig().jumpTarget;
     if (configuredTarget === 'none') return { ok: false, message: '跳转失败：跳转功能已关闭。' };
+    const workspace = resolveJumpWorkspace(jumpTarget, session);
+    if (configuredTarget === 'workspace') return jumpToWorkspace(workspace);
+    if (configuredTarget === 'terminal') return focusWindowsTerminal(workspace);
+    if (configuredTarget === 'precise') {
+      const precise = await jumpToTerminalSession(session);
+      if (precise.ok) return precise;
+      return preciseJump(workspace);
+    }
     return jumpToTerminalSession(session);
   });
 
@@ -860,6 +868,14 @@ function resolveJumpSession(target?: string | { sessionId?: string; workspace?: 
     );
   }
   return sessions.find((session) => session.metadata?.terminal);
+}
+
+function resolveJumpWorkspace(
+  target: string | { sessionId?: string; workspace?: string } | undefined,
+  session: ReturnType<typeof resolveJumpSession>
+): string | undefined {
+  if (typeof target === 'string') return target;
+  return target?.workspace ?? session?.workspace;
 }
 
 function waitForPermission(request: PermissionRequest): Promise<PermissionResponse> {

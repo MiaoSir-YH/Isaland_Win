@@ -1275,6 +1275,7 @@ function isLowSignalStatusEvent(event: NormalizedEvent): boolean {
   if (event.metadata?.source === 'jump') return true;
   const notificationType = String(event.metadata?.notification_type ?? '').toLowerCase();
   if (notificationType === 'permission_prompt' || notificationType === 'input_waiting') return false;
+  if (notificationType === 'idle_prompt') return true;
   const name = String(
     event.metadata?.hook_event_name ?? event.metadata?.eventType ?? event.metadata?.type ?? event.eventType
   ).toLowerCase();

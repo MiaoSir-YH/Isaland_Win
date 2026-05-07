@@ -139,7 +139,7 @@ export class IslandState {
   }
 
   addPermission(request: PermissionRequest): void {
-    this.permissions = [request, ...this.permissions.filter((item) => item.id !== request.id)].slice(0, 20);
+    this.permissions = [request, ...this.permissions.filter((item) => item.id !== request.id)];
   }
 
   setNotification(event: NormalizedEvent): void {

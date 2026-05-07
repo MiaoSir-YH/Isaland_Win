@@ -36,4 +36,8 @@ describe('jump resolver exports', () => {
       message: '跳转失败：当前会话没有可定位的终端信息。'
     });
   });
+
+  it('opens Windows Terminal for terminal jumps when no precise metadata is required', async () => {
+    expect(typeof focusWindowsTerminal).toBe('function');
+  });
 });

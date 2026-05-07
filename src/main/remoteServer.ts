@@ -12,9 +12,11 @@ export interface RemoteServerHandle {
 
 export async function startRemoteServer(options: {
   token?: string;
+  host?: string;
   onResolution: (response: PermissionResponse) => void;
 }): Promise<RemoteServerHandle> {
   const token = options.token ?? randomBytes(24).toString('hex');
+  const host = options.host ?? '127.0.0.1';
   const clients = new Set<ServerResponse>();
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1');
@@ -49,7 +51,7 @@ export async function startRemoteServer(options: {
 
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
-    server.listen(0, '0.0.0.0', () => {
+    server.listen(0, host, () => {
       server.off('error', reject);
       resolve();
     });
@@ -57,7 +59,7 @@ export async function startRemoteServer(options: {
 
   const address = server.address() as AddressInfo;
   return {
-    url: `http://127.0.0.1:${address.port}`,
+    url: `http://${host}:${address.port}`,
     token,
     pushEvent: (event) => {
       const line = `data: ${JSON.stringify(event)}\n\n`;
