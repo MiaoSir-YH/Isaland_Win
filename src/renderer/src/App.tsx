@@ -841,13 +841,13 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
       setPermissionNoticeClosing(false);
       if (
         currentPhase === 'permissionNotice' ||
-        currentPhase === 'collapsing' ||
         currentPhase === 'expanding' ||
         currentPhase === 'expanded'
       ) {
         clearPresentationTimer();
         return undefined;
       }
+      if (currentPhase === 'collapsing') return undefined;
       if (isPeekPresentationPhase(currentPhase)) {
         restoreIslandBar();
         return undefined;
@@ -1210,14 +1210,18 @@ function buildCapsulePath(width: number, inset = 1): string {
 function PermissionNotice({ request, closing = false }: { request: PermissionRequest; closing?: boolean }): JSX.Element {
   const [answer, setAnswer] = useState('');
   const [busyDecision, setBusyDecision] = useState<PermissionDecision | null>(null);
+  const respondInFlightRef = useRef(false);
   const canSendTypedAnswer = request.kind === 'question' && answer.trim().length > 0;
 
   useEffect(() => {
     setAnswer('');
     setBusyDecision(null);
+    respondInFlightRef.current = false;
   }, [request.id]);
 
   async function respond(decision: PermissionDecision, selectedAnswer?: string): Promise<void> {
+    if (respondInFlightRef.current) return;
+    respondInFlightRef.current = true;
     setBusyDecision(decision);
     try {
       await window.vibeIsland.respondPermission({
@@ -1228,6 +1232,7 @@ function PermissionNotice({ request, closing = false }: { request: PermissionReq
         scope: decision === 'denyForSession' ? 'session' : 'request'
       });
     } finally {
+      respondInFlightRef.current = false;
       setBusyDecision(null);
     }
   }

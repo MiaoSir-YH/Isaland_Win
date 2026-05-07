@@ -278,6 +278,18 @@ describe('config adapters', () => {
     });
   });
 
+  it('escapes OpenCode helper commands without template interpolation', async () => {
+    const pluginPath = join(home, '.config', 'opencode', 'plugins', 'vibe-island.js');
+    const helperCommand = 'O:\\w_Island\\${globalThis.process.exit(1)}\\`helper`.mjs';
+
+    await installHook('opencode', helperCommand, home);
+    const plugin = await readFile(pluginPath, 'utf8');
+
+    expect(plugin).toContain(JSON.stringify(helperCommand));
+    expect(plugin).not.toContain('const command = `O:');
+    expect(plugin).toContain(' + ` --agent opencode --event ${event?.type ?? \'status\'}`');
+  });
+
   it('enables the Codex hook feature and only reports Codex hooks installed when the feature is on', async () => {
     const hooksPath = join(home, '.codex', 'hooks.json');
     const configPath = join(home, '.codex', 'config.toml');

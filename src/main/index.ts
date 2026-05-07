@@ -1,5 +1,5 @@
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join, normalize } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import {
@@ -36,7 +36,7 @@ import { isFinalCodexReplyPhase, startCodexReplyWatcher, type CodexReplyWatcher 
 import { focusWindowsTerminal, jumpToTerminalSession, jumpToWorkspace, preciseJump } from './jump';
 import { startCodexAppServer, type CodexAppServerCoordinator } from './codexAppServer';
 import { makeDiagnostics } from './diagnostics';
-import { startRemoteServer, type RemoteServerHandle } from './remoteServer';
+import { startRemoteServer, type RemotePermissionResponse, type RemoteServerHandle } from './remoteServer';
 import { discoverSessions } from './sessionDiscovery';
 import { playConfiguredSound } from './sound';
 import { checkForUpdates } from './updates';
@@ -56,6 +56,11 @@ import {
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const isDev = Boolean(process.env.ELECTRON_RENDERER_URL);
+type RendererView = 'island' | 'settings';
+type IpcHandler<TArgs extends unknown[], TResult> = (
+  event: Electron.IpcMainInvokeEvent,
+  ...args: TArgs
+) => TResult | Promise<TResult>;
 
 let islandWindow: BrowserWindow | null = null;
 let settingsWindow: BrowserWindow | null = null;
@@ -102,12 +107,14 @@ const ISLAND_TRANSPARENCY_REFRESH_DELAY_MS = 220;
 const SETTINGS_NORMAL_SIZE = { width: 1100, height: 760 };
 const SETTINGS_MIN_SIZE = { width: 940, height: 660 };
 let islandLayoutSize = { ...ISLAND_COLLAPSED_SIZE };
+const trustedWebContentsViews = new Map<number, RendererView>();
 
 const permissionWaiters = new Map<
   string,
   {
     resolve: (response: PermissionResponse) => void;
     timer: NodeJS.Timeout;
+    remoteResolveToken: string;
   }
 >();
 
@@ -195,7 +202,7 @@ async function bootstrap(): Promise<void> {
     }
     remoteServer = await startRemoteServer({
       token: config.remote.token,
-      onResolution: resolvePermission
+      onResolution: resolveRemotePermission
     });
     refreshDiagnostics();
   }
@@ -264,9 +271,11 @@ function createIslandWindow(): void {
     setIslandExpanded(false);
   });
   window.on('closed', () => {
+    trustedWebContentsViews.delete(window.webContents.id);
     if (islandWindow === window) islandWindow = null;
   });
 
+  hardenRendererWindow(window, 'island');
   loadRenderer(window, 'island');
 }
 
@@ -300,6 +309,7 @@ function createSettingsWindow(): BrowserWindow {
   settingsWindow.on('unmaximize', () => emitSettingsWindowState());
   settingsWindow.on('restore', () => emitSettingsWindowState());
   settingsWindow.on('closed', () => {
+    trustedWebContentsViews.delete(settingsWindow?.webContents.id ?? -1);
     settingsWindow = null;
     settingsManuallyMaximized = false;
     settingsRestoreBounds = null;
@@ -307,15 +317,61 @@ function createSettingsWindow(): BrowserWindow {
     settingsDragBounds = null;
     stopSettingsWindowDragLoop();
   });
+  hardenRendererWindow(settingsWindow, 'settings');
   loadRenderer(settingsWindow, 'settings');
   return settingsWindow;
 }
 
-function loadRenderer(window: BrowserWindow, view: 'island' | 'settings'): void {
+function loadRenderer(window: BrowserWindow, view: RendererView): void {
   if (isDev && process.env.ELECTRON_RENDERER_URL) {
     void window.loadURL(`${process.env.ELECTRON_RENDERER_URL}?view=${view}`);
   } else {
     void window.loadFile(join(__dirname, '../renderer/index.html'), { query: { view } });
+  }
+}
+
+function hardenRendererWindow(window: BrowserWindow, view: RendererView): void {
+  trustedWebContentsViews.set(window.webContents.id, view);
+  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  window.webContents.on('will-navigate', (event, url) => {
+    if (!isTrustedRendererUrl(url, view)) event.preventDefault();
+  });
+  window.webContents.on('will-redirect', (event, url) => {
+    if (!isTrustedRendererUrl(url, view)) event.preventDefault();
+  });
+}
+
+function isTrustedRendererUrl(rawUrl: string, view: RendererView): boolean {
+  try {
+    const url = new URL(rawUrl);
+    if (url.searchParams.get('view') !== view) return false;
+    if (isDev && process.env.ELECTRON_RENDERER_URL) {
+      const allowed = new URL(process.env.ELECTRON_RENDERER_URL);
+      return url.origin === allowed.origin && url.pathname === allowed.pathname;
+    }
+    const rendererUrl = pathToFileURL(join(__dirname, '../renderer/index.html'));
+    return url.protocol === 'file:' && normalize(fileURLToPath(url)) === normalize(fileURLToPath(rendererUrl));
+  } catch {
+    return false;
+  }
+}
+
+function trustedIpc<TArgs extends unknown[], TResult>(
+  views: RendererView | RendererView[],
+  handler: IpcHandler<TArgs, TResult>
+): IpcHandler<TArgs, TResult> {
+  const allowedViews = Array.isArray(views) ? views : [views];
+  return (event, ...args) => {
+    assertTrustedIpcSender(event, allowedViews);
+    return handler(event, ...args);
+  };
+}
+
+function assertTrustedIpcSender(event: Electron.IpcMainInvokeEvent, allowedViews: RendererView[]): void {
+  const view = trustedWebContentsViews.get(event.sender.id);
+  const senderUrl = event.senderFrame?.url;
+  if (!view || !allowedViews.includes(view) || !senderUrl || !isTrustedRendererUrl(senderUrl, view)) {
+    throw new Error('Blocked untrusted renderer IPC call.');
   }
 }
 
@@ -690,30 +746,30 @@ function getSafeSettingsRestoreBounds(preferred?: Electron.Rectangle): Electron.
 }
 
 function registerIpc(paths: ReturnType<typeof makeStoragePaths>): void {
-  ipcMain.handle('app:snapshot', () => state.snapshot());
-  ipcMain.handle('island:set-expanded', (_event, expanded: boolean) => setIslandExpanded(Boolean(expanded)));
-  ipcMain.handle('island:set-hovered', (_event, hovered: boolean) => {
+  ipcMain.handle('app:snapshot', trustedIpc(['island', 'settings'], () => state.snapshot()));
+  ipcMain.handle('island:set-expanded', trustedIpc('island', (_event, expanded: boolean) => setIslandExpanded(Boolean(expanded))));
+  ipcMain.handle('island:set-hovered', trustedIpc('island', (_event, hovered: boolean) => {
     if (!islandWindow || islandWindow.isDestroyed()) return;
     islandHovered = Boolean(hovered);
     updateIslandMouseInteractivity();
-  });
-  ipcMain.handle('island:set-peeking', (_event, peeking: boolean) => {
+  }));
+  ipcMain.handle('island:set-peeking', trustedIpc('island', (_event, peeking: boolean) => {
     setIslandPeeking(Boolean(peeking));
-  });
-  ipcMain.handle('island:set-layout', (_event, size: { width: number; height: number }) => {
+  }));
+  ipcMain.handle('island:set-layout', trustedIpc('island', (_event, size: { width: number; height: number }) => {
     setIslandLayout(size);
-  });
-  ipcMain.handle('window:settings', openSettings);
-  ipcMain.handle('window:settings-control', (_event, action: 'close' | 'minimize' | 'zoom') =>
+  }));
+  ipcMain.handle('window:settings', trustedIpc('island', openSettings));
+  ipcMain.handle('window:settings-control', trustedIpc('settings', (_event, action: 'close' | 'minimize' | 'zoom') =>
     controlSettingsWindow(action)
-  );
-  ipcMain.handle('window:settings-state', getSettingsWindowState);
-  ipcMain.handle('window:settings-drag-start', (_event, point) => beginSettingsWindowDrag(point));
-  ipcMain.handle('window:settings-drag-move', (_event, point) => moveSettingsWindowDrag(point));
-  ipcMain.handle('window:settings-drag-end', endSettingsWindowDrag);
-  ipcMain.handle('shell:open-path', (_event, path: string) => shell.openPath(path));
+  ));
+  ipcMain.handle('window:settings-state', trustedIpc('settings', getSettingsWindowState));
+  ipcMain.handle('window:settings-drag-start', trustedIpc('settings', (_event, point) => beginSettingsWindowDrag(point)));
+  ipcMain.handle('window:settings-drag-move', trustedIpc('settings', (_event, point) => moveSettingsWindowDrag(point)));
+  ipcMain.handle('window:settings-drag-end', trustedIpc('settings', endSettingsWindowDrag));
+  ipcMain.handle('shell:open-path', trustedIpc('settings', (_event, path: string) => openTrustedPath(path)));
 
-  ipcMain.handle('config:update', async (_event, partial: Partial<AppConfig>) => {
+  ipcMain.handle('config:update', trustedIpc('settings', async (_event, partial: Partial<AppConfig>) => {
     const previous = state.getConfig();
     const next = mergeConfig(previous, partial);
     state.setConfig(next);
@@ -728,23 +784,23 @@ function registerIpc(paths: ReturnType<typeof makeStoragePaths>): void {
     await refreshRuntimeServices(previous, next);
     broadcastSnapshot();
     return next;
-  });
+  }));
 
-  ipcMain.handle('agents:install-hook', async (_event, agent: AgentId) => {
+  ipcMain.handle('agents:install-hook', trustedIpc('settings', async (_event, agent: AgentId) => {
     const result = await installHook(agent, helperPath(), getUserHomePath());
     await refreshAgents();
     broadcastSnapshot();
     return result;
-  });
+  }));
 
-  ipcMain.handle('agents:uninstall-hook', async (_event, agent: AgentId) => {
+  ipcMain.handle('agents:uninstall-hook', trustedIpc('settings', async (_event, agent: AgentId) => {
     const result = await uninstallHook(agent, getUserHomePath());
     await refreshAgents();
     broadcastSnapshot();
     return result;
-  });
+  }));
 
-  ipcMain.handle('agents:toggle-hook', async (_event, agent: AgentId) => {
+  ipcMain.handle('agents:toggle-hook', trustedIpc('settings', async (_event, agent: AgentId) => {
     const agents = await refreshAgents();
     const current = agents.find((item) => item.id === agent);
     if (!current) throw new Error(`Unknown agent: ${agent}`);
@@ -754,20 +810,20 @@ function registerIpc(paths: ReturnType<typeof makeStoragePaths>): void {
     await refreshAgents();
     broadcastSnapshot();
     return result;
-  });
+  }));
 
-  ipcMain.handle('agents:refresh', async () => {
+  ipcMain.handle('agents:refresh', trustedIpc('settings', async () => {
     const agents = await refreshAgents();
     broadcastSnapshot();
     return agents;
-  });
+  }));
 
-  ipcMain.handle('permission:respond', async (_event, response: PermissionResponse) => {
+  ipcMain.handle('permission:respond', trustedIpc('island', async (_event, response: PermissionResponse) => {
     resolvePermission(response);
     broadcastSnapshot();
-  });
+  }));
 
-  ipcMain.handle('jump:workspace', async (_event, jumpTarget?: string | { sessionId?: string; workspace?: string }) => {
+  ipcMain.handle('jump:workspace', trustedIpc('island', async (_event, jumpTarget?: string | { sessionId?: string; workspace?: string }) => {
     const session = resolveJumpSession(jumpTarget);
     const configuredTarget = state.getConfig().jumpTarget;
     if (configuredTarget === 'none') return { ok: false, message: '跳转失败：跳转功能已关闭。' };
@@ -780,29 +836,29 @@ function registerIpc(paths: ReturnType<typeof makeStoragePaths>): void {
       return preciseJump(workspace);
     }
     return jumpToTerminalSession(session);
-  });
+  }));
 
-  ipcMain.handle('agents:install-claude-status-line', async () => {
+  ipcMain.handle('agents:install-claude-status-line', trustedIpc('settings', async () => {
     const result = await installClaudeStatusLine(
       `node "${statusLinePath().replace(/"/g, '\\"')}"`
     );
     broadcastSnapshot();
     return result;
-  });
+  }));
 
-  ipcMain.handle('agents:uninstall-claude-status-line', async () => {
+  ipcMain.handle('agents:uninstall-claude-status-line', trustedIpc('settings', async () => {
     const result = await uninstallClaudeStatusLine();
     broadcastSnapshot();
     return result;
-  });
+  }));
 
-  ipcMain.handle('diagnostics:refresh', async () => {
+  ipcMain.handle('diagnostics:refresh', trustedIpc('settings', async () => {
     await refreshDiagnostics();
     broadcastSnapshot();
     return state.snapshot().diagnostics;
-  });
+  }));
 
-  ipcMain.handle('updates:check', async () => {
+  ipcMain.handle('updates:check', trustedIpc('settings', async () => {
     const next = {
       ...state.getConfig(),
       update: await checkForUpdates(state.getConfig().update)
@@ -811,9 +867,9 @@ function registerIpc(paths: ReturnType<typeof makeStoragePaths>): void {
     await saveConfig(paths, next);
     broadcastSnapshot();
     return next.update;
-  });
+  }));
 
-  ipcMain.handle('dev:sample-event', async (_event, agent: AgentId) => {
+  ipcMain.handle('dev:sample-event', trustedIpc('settings', async (_event, agent: AgentId) => {
     await recordEvent(
       normalizeEvent(
         {
@@ -828,7 +884,26 @@ function registerIpc(paths: ReturnType<typeof makeStoragePaths>): void {
         agent
       )
     );
-  });
+  }));
+}
+
+function openTrustedPath(path: string): Promise<string> {
+  if (typeof path !== 'string' || !isKnownConfigPath(path)) {
+    throw new Error('Blocked opening an unknown local path.');
+  }
+  return shell.openPath(path);
+}
+
+function isKnownConfigPath(path: string): boolean {
+  const target = normalize(path);
+  const allowed = [
+    storagePaths?.config,
+    storagePaths?.events,
+    storagePaths?.runtime,
+    storagePaths?.sessions,
+    ...state.snapshot().agents.flatMap((agent) => [agent.configPath, agent.pluginPath])
+  ].filter((item): item is string => typeof item === 'string' && item.length > 0);
+  return allowed.some((item) => normalize(item) === target);
 }
 
 async function recordEvent(event: NormalizedEvent): Promise<void> {
@@ -929,7 +1004,7 @@ function waitForPermission(request: PermissionRequest): Promise<PermissionRespon
     new Notification({ title: request.action, body: request.command }).show();
   }
   playConfiguredSound(config.sound);
-  remoteServer?.pushEvent(request);
+  const remoteResolveToken = makeRemoteToken();
 
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
@@ -940,22 +1015,52 @@ function waitForPermission(request: PermissionRequest): Promise<PermissionRespon
       resolvePermission(response);
     }, getPermissionNoticeTimeoutMs(request.timeoutMs));
 
-    permissionWaiters.set(request.id, { resolve, timer });
+    permissionWaiters.set(request.id, { resolve, timer, remoteResolveToken });
     debugPermission('wait:armed', {
       id: request.id,
       timeoutMs: getPermissionNoticeTimeoutMs(request.timeoutMs),
       waiterCount: permissionWaiters.size
     });
+    remoteServer?.pushEvent({
+      ...request,
+      metadata: {
+        ...request.metadata,
+        remoteResolveToken
+      }
+    });
   });
 }
 
-function resolvePermission(response: PermissionResponse): void {
+function resolveRemotePermission(response: RemotePermissionResponse): boolean {
+  const waiter = permissionWaiters.get(response.id);
+  if (!waiter || response.remoteResolveToken !== waiter.remoteResolveToken) return false;
+  resolvePermission(response);
+  return true;
+}
+
+function resolvePermission(response: PermissionResponse): boolean {
   debugPermission('resolve:start', {
     id: response.id,
     decision: response.decision,
     pendingBefore: state.snapshot().permissions.map((item) => item.id)
   });
   const waiter = permissionWaiters.get(response.id);
+  if (!waiter) {
+    debugPermission('resolve:ignored', {
+      id: response.id,
+      waiterCount: permissionWaiters.size
+    });
+    return false;
+  }
+  const pending = state.snapshot().permissions.some((request) => request.id === response.id);
+  if (!pending) {
+    permissionWaiters.delete(response.id);
+    debugPermission('resolve:ignored-not-pending', {
+      id: response.id,
+      waiterCount: permissionWaiters.size
+    });
+    return false;
+  }
   if (waiter) {
     clearTimeout(waiter.timer);
     waiter.resolve(response);
@@ -969,6 +1074,7 @@ function resolvePermission(response: PermissionResponse): void {
     pendingAfter: state.snapshot().permissions.map((item) => item.id),
     waiterCount: permissionWaiters.size
   });
+  return true;
 }
 
 function broadcastSnapshot(): void {
@@ -1028,7 +1134,7 @@ async function refreshRuntimeServices(previous: AppConfig, config: AppConfig): P
     }
     remoteServer = await startRemoteServer({
       token: config.remote.token,
-      onResolution: resolvePermission
+      onResolution: resolveRemotePermission
     });
   }
 

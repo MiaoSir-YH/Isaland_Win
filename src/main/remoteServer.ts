@@ -10,10 +10,17 @@ export interface RemoteServerHandle {
   close: () => Promise<void>;
 }
 
+const MAX_RESOLVE_BODY_BYTES = 16 * 1024;
+const PERMISSION_DECISIONS = new Set(['allow', 'deny', 'denyForSession', 'timeout', 'answer']);
+
+export type RemotePermissionResponse = PermissionResponse & {
+  remoteResolveToken?: string;
+};
+
 export async function startRemoteServer(options: {
   token?: string;
   host?: string;
-  onResolution: (response: PermissionResponse) => void;
+  onResolution: (response: RemotePermissionResponse) => boolean;
 }): Promise<RemoteServerHandle> {
   const token = options.token ?? randomBytes(24).toString('hex');
   const host = options.host ?? '127.0.0.1';
@@ -36,12 +43,30 @@ export async function startRemoteServer(options: {
     }
     if (request.method === 'POST' && url.pathname === '/v1/remote/resolve') {
       let body = '';
+      let bytes = 0;
+      let closed = false;
       request.setEncoding('utf8');
       request.on('data', (chunk) => {
+        bytes += Buffer.byteLength(chunk, 'utf8');
+        if (bytes > MAX_RESOLVE_BODY_BYTES) {
+          closed = true;
+          response.writeHead(413).end('payload too large');
+          request.destroy();
+          return;
+        }
         body += chunk;
       });
       request.on('end', () => {
-        options.onResolution(JSON.parse(body || '{}') as PermissionResponse);
+        if (closed) return;
+        const parsed = parseResolveBody(body);
+        if (!parsed) {
+          response.writeHead(400).end('invalid resolve body');
+          return;
+        }
+        if (!options.onResolution(parsed)) {
+          response.writeHead(404).end('unknown permission request');
+          return;
+        }
         response.writeHead(200, { 'Content-Type': 'application/json' }).end('{"ok":true}');
       });
       return;
@@ -67,4 +92,26 @@ export async function startRemoteServer(options: {
     },
     close: () => new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())))
   };
+}
+
+function parseResolveBody(body: string): RemotePermissionResponse | null {
+  try {
+    const value = JSON.parse(body || '{}') as Record<string, unknown>;
+    if (!value || typeof value !== 'object') return null;
+    if (typeof value.id !== 'string' || value.id.length === 0) return null;
+    if (typeof value.decision !== 'string' || !PERMISSION_DECISIONS.has(value.decision)) return null;
+    if (typeof value.decidedAt !== 'string' || value.decidedAt.length === 0) return null;
+    if ('remoteResolveToken' in value && typeof value.remoteResolveToken !== 'string') return null;
+    return {
+      id: value.id,
+      decision: value.decision,
+      decidedAt: value.decidedAt,
+      ...(typeof value.answer === 'string' ? { answer: value.answer } : {}),
+      ...(typeof value.reason === 'string' ? { reason: value.reason } : {}),
+      ...(value.scope === 'request' || value.scope === 'session' ? { scope: value.scope } : {}),
+      ...(typeof value.remoteResolveToken === 'string' ? { remoteResolveToken: value.remoteResolveToken } : {})
+    } as RemotePermissionResponse;
+  } catch {
+    return null;
+  }
 }

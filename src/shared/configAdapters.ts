@@ -464,8 +464,8 @@ async function uninstallKimiHook(adapter: AdapterSpec, home: string): Promise<Ho
 }
 
 function makeOpenCodePlugin(helperCommand: string): string {
-  const escaped = helperCommand.replace(/\\/g, '\\\\').replace(/`/g, '\\`');
-  return `// ${MANAGED_MARKER}\nexport const VibeIslandPlugin = async ({ event }) => {\n  const command = \`${escaped} --agent opencode --event \${event?.type ?? 'status'}\`;\n  return { command };\n};\nexport default VibeIslandPlugin;\n`;
+  const helper = JSON.stringify(helperCommand);
+  return `// ${MANAGED_MARKER}\nexport const VibeIslandPlugin = async ({ event }) => {\n  const command = ${helper} + \` --agent opencode --event \${event?.type ?? 'status'}\`;\n  return { command };\n};\nexport default VibeIslandPlugin;\n`;
 }
 
 function makeKimiHookToml(helperCommand: string, agent: AgentId, event: string): string {

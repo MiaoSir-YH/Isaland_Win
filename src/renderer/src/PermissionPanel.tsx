@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Loader2, MessageCircle, ShieldAlert } from 'lucide-react';
 import type { PermissionDecision, PermissionRequest } from '@shared/types';
 import { getPermissionNoticeTimeoutMs } from '@shared/permission';
@@ -13,6 +13,7 @@ export function PermissionPanel({
 }): JSX.Element {
   const [answer, setAnswer] = useState('');
   const [busyDecision, setBusyDecision] = useState<PermissionDecision | null>(null);
+  const respondInFlightRef = useRef(false);
   const kindLabel = getActionableKindLabel(request);
   const canSendTypedAnswer = request.kind === 'question' && answer.trim().length > 0;
   const hasChoiceAnswers = request.kind === 'question' && Boolean(request.choices?.length);
@@ -21,9 +22,12 @@ export function PermissionPanel({
   useEffect(() => {
     setAnswer('');
     setBusyDecision(null);
+    respondInFlightRef.current = false;
   }, [request.id]);
 
   async function respond(decision: PermissionDecision, selectedAnswer?: string): Promise<void> {
+    if (respondInFlightRef.current) return;
+    respondInFlightRef.current = true;
     setBusyDecision(decision);
     try {
       await window.vibeIsland.respondPermission({
@@ -34,6 +38,7 @@ export function PermissionPanel({
         scope: decision === 'denyForSession' ? 'session' : 'request'
       });
     } finally {
+      respondInFlightRef.current = false;
       setBusyDecision(null);
     }
   }
