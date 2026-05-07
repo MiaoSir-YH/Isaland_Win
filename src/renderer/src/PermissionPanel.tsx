@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { MessageCircle, ShieldAlert } from 'lucide-react';
+import { Loader2, MessageCircle, ShieldAlert } from 'lucide-react';
 import type { PermissionDecision, PermissionRequest } from '@shared/types';
 import { getPermissionNoticeTimeoutMs } from '@shared/permission';
 import { agentLabels } from './i18n';
@@ -15,6 +15,8 @@ export function PermissionPanel({
   const [busyDecision, setBusyDecision] = useState<PermissionDecision | null>(null);
   const kindLabel = getActionableKindLabel(request);
   const canSendTypedAnswer = request.kind === 'question' && answer.trim().length > 0;
+  const hasChoiceAnswers = request.kind === 'question' && Boolean(request.choices?.length);
+  const needsTypedAnswer = request.kind === 'question' && !hasChoiceAnswers;
 
   useEffect(() => {
     setAnswer('');
@@ -37,27 +39,48 @@ export function PermissionPanel({
   }
 
   return (
-    <section className={`permission-panel risk-${request.risk} kind-${request.kind}`} aria-label={kindLabel}>
-      <div>
+    <section
+      className={`permission-panel risk-${request.risk} kind-${request.kind} ${
+        compact ? 'compact-layout' : 'detail-layout'
+      }`}
+      aria-label={kindLabel}
+    >
+      <div className="permission-panel-scroll">
         <div className="section-kicker">{agentLabels[request.agent]} {kindLabel}</div>
         <h2>{request.action}</h2>
         {request.prompt ? <p>{request.prompt}</p> : null}
         {request.command ? <code>{request.command}</code> : null}
       </div>
-      <div className="permission-meta">
-        {request.kind === 'question' ? <MessageCircle size={15} /> : <ShieldAlert size={15} />}
-        <span>{formatActionableMeta(request)}</span>
-        <strong>{formatRisk(request.risk)}</strong>
+      <div className={`permission-panel-footer ${compact ? 'compact' : 'detail'}`}>
+        <div className="permission-meta">
+          {request.kind === 'question' ? <MessageCircle size={15} /> : <ShieldAlert size={15} />}
+          <span>{formatActionableMeta(request)}</span>
+          <strong>{formatRisk(request.risk)}</strong>
+        </div>
+        {!compact && request.kind === 'question' ? (
+          <div className="permission-panel-response">
+            <AnswerFields
+              request={request}
+              compact={false}
+              answer={answer}
+              busyDecision={busyDecision}
+              needsTypedAnswer={needsTypedAnswer}
+              onAnswerChange={setAnswer}
+              onRespond={respond}
+            />
+          </div>
+        ) : null}
+        <div className="permission-panel-actions-row">
+          <PermissionActionButtons
+            request={request}
+            compact={compact}
+            busyDecision={busyDecision}
+            canSendTypedAnswer={canSendTypedAnswer}
+            needsTypedAnswer={needsTypedAnswer}
+            onRespond={respond}
+          />
+        </div>
       </div>
-      <InlinePermissionActions
-        request={request}
-        compact={compact}
-        answer={answer}
-        busyDecision={busyDecision}
-        canSendTypedAnswer={canSendTypedAnswer}
-        onAnswerChange={setAnswer}
-        onRespond={respond}
-      />
     </section>
   );
 }
@@ -85,72 +108,152 @@ export function InlinePermissionActions({
   return (
     <>
       {request.kind === 'question' ? (
-        <div className={`answer-box ${compact ? 'compact' : ''}`}>
-          {request.choices?.length ? (
-            <div className="answer-choices">
-              {request.choices.map((choice) => (
-                <button
-                  className="decision answer"
-                  type="button"
-                  key={choice}
-                  onClick={() => void onRespond('answer', choice)}
-                  disabled={Boolean(busyDecision)}
-                >
-                  {choice}
-                </button>
-              ))}
-            </div>
-          ) : null}
-          {needsTypedAnswer ? (
-            <label>
-              <span>回答</span>
-              <textarea
-                value={answer}
-                rows={compact ? 2 : 3}
-                onChange={(event) => onAnswerChange(event.currentTarget.value)}
-                placeholder="输入要发送给 Agent 的回复"
-              />
-            </label>
-          ) : null}
-        </div>
+        <AnswerFields
+          request={request}
+          compact={compact}
+          answer={answer}
+          busyDecision={busyDecision}
+          needsTypedAnswer={needsTypedAnswer}
+          onAnswerChange={onAnswerChange}
+          onRespond={onRespond}
+        />
       ) : null}
-      <div className={`permission-actions ${compact ? 'compact' : ''}`}>
-        {request.kind === 'permission' ? (
-          <>
-            <button className="decision allow" type="button" onClick={() => void onRespond('allow')} disabled={Boolean(busyDecision)}>
-              允许
-            </button>
-            <button className="decision deny" type="button" onClick={() => void onRespond('deny')} disabled={Boolean(busyDecision)}>
-              拒绝
-            </button>
+      <PermissionActionButtons
+        request={request}
+        compact={compact}
+        busyDecision={busyDecision}
+        canSendTypedAnswer={canSendTypedAnswer}
+        needsTypedAnswer={needsTypedAnswer}
+        onRespond={onRespond}
+      />
+    </>
+  );
+}
+
+function AnswerFields({
+  request,
+  compact,
+  answer,
+  busyDecision,
+  needsTypedAnswer,
+  onAnswerChange,
+  onRespond
+}: {
+  request: PermissionRequest;
+  compact: boolean;
+  answer: string;
+  busyDecision: PermissionDecision | null;
+  needsTypedAnswer: boolean;
+  onAnswerChange: (value: string) => void;
+  onRespond: (decision: PermissionDecision, selectedAnswer?: string) => Promise<void>;
+}): JSX.Element {
+  return (
+    <div className={`answer-box ${compact ? 'compact' : ''}`}>
+      {request.choices?.length ? (
+        <div className="answer-choices">
+          {request.choices.map((choice) => (
             <button
-              className="decision muted"
+              className={`decision answer ${busyDecision === 'answer' ? 'is-submitting' : ''}`}
               type="button"
-              onClick={() => void onRespond('denyForSession')}
+              key={choice}
+              onClick={() => void onRespond('answer', choice)}
               disabled={Boolean(busyDecision)}
             >
-              本会话拒绝
+              {busyDecision === 'answer' ? <Loader2 size={13} /> : null}
+              {choice}
             </button>
-          </>
-        ) : (
-          <>
-            {needsTypedAnswer ? (
-              <button
-                className="decision allow"
-                type="button"
-                onClick={() => void onRespond('answer')}
-                disabled={Boolean(busyDecision) || !canSendTypedAnswer}
-              >
-                发送回答
-              </button>
-            ) : null}
-            <button className="decision muted" type="button" onClick={() => void onRespond('deny')} disabled={Boolean(busyDecision)}>
-              跳过
+          ))}
+        </div>
+      ) : null}
+      {needsTypedAnswer ? (
+        <label>
+          <span>回答</span>
+          <textarea
+            value={answer}
+            rows={compact ? 2 : 3}
+            onChange={(event) => onAnswerChange(event.currentTarget.value)}
+            placeholder="输入要发送给 Agent 的回复"
+          />
+        </label>
+      ) : null}
+    </div>
+  );
+}
+
+function PermissionActionButtons({
+  request,
+  compact,
+  busyDecision,
+  canSendTypedAnswer,
+  needsTypedAnswer,
+  onRespond
+}: {
+  request: PermissionRequest;
+  compact: boolean;
+  busyDecision: PermissionDecision | null;
+  canSendTypedAnswer: boolean;
+  needsTypedAnswer: boolean;
+  onRespond: (decision: PermissionDecision, selectedAnswer?: string) => Promise<void>;
+}): JSX.Element {
+  const busyLabel = busyDecision ? getBusyDecisionLabel(busyDecision) : null;
+
+  return (
+    <div className={`permission-actions ${compact ? 'compact' : ''}`}>
+      {request.kind === 'permission' ? (
+        <>
+          <button
+            className={`decision allow ${busyDecision === 'allow' ? 'is-submitting' : ''}`}
+            type="button"
+            onClick={() => void onRespond('allow')}
+            disabled={Boolean(busyDecision)}
+          >
+            {busyDecision === 'allow' ? <Loader2 size={13} /> : null}
+            {busyDecision === 'allow' ? busyLabel : '允许'}
+          </button>
+          <button
+            className={`decision deny ${busyDecision === 'deny' ? 'is-submitting' : ''}`}
+            type="button"
+            onClick={() => void onRespond('deny')}
+            disabled={Boolean(busyDecision)}
+          >
+            {busyDecision === 'deny' ? <Loader2 size={13} /> : null}
+            {busyDecision === 'deny' ? busyLabel : '拒绝'}
+          </button>
+          <button
+            className={`decision muted ${busyDecision === 'denyForSession' ? 'is-submitting' : ''}`}
+            type="button"
+            onClick={() => void onRespond('denyForSession')}
+            disabled={Boolean(busyDecision)}
+          >
+            {busyDecision === 'denyForSession' ? <Loader2 size={13} /> : null}
+            {busyDecision === 'denyForSession' ? busyLabel : '本会话拒绝'}
+          </button>
+        </>
+      ) : (
+        <>
+          {needsTypedAnswer ? (
+            <button
+              className={`decision allow ${busyDecision === 'answer' ? 'is-submitting' : ''}`}
+              type="button"
+              onClick={() => void onRespond('answer')}
+              disabled={Boolean(busyDecision) || !canSendTypedAnswer}
+            >
+              {busyDecision === 'answer' ? <Loader2 size={13} /> : null}
+              {busyDecision === 'answer' ? busyLabel : '发送回答'}
             </button>
-          </>
-        )}
-      </div>
-    </>
+          ) : null}
+          <button
+            className={`decision muted ${busyDecision === 'deny' ? 'is-submitting' : ''}`}
+            type="button"
+            onClick={() => void onRespond('deny')}
+            disabled={Boolean(busyDecision)}
+          >
+            {busyDecision === 'deny' ? <Loader2 size={13} /> : null}
+            {busyDecision === 'deny' ? busyLabel : '跳过'}
+          </button>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -168,4 +271,11 @@ export function formatRisk(risk: PermissionRequest['risk']): string {
   if (risk === 'high') return '高风险';
   if (risk === 'medium') return '中风险';
   return '低风险';
+}
+
+function getBusyDecisionLabel(decision: PermissionDecision): string {
+  if (decision === 'allow') return '允许中';
+  if (decision === 'deny' || decision === 'denyForSession') return '拒绝中';
+  if (decision === 'answer') return '发送中';
+  return '处理中';
 }

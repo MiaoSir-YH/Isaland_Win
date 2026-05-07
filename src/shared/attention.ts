@@ -25,8 +25,8 @@ export function shouldPromoteWithStrategy(event: NormalizedEvent, strategy: Noti
 export function getIslandNotificationPriority(event: NormalizedEvent): number {
   const reason = getIslandAttentionReason(event);
   if (reason === 'question') return 95;
+  if (reason === 'completed') return 92;
   if (reason === 'reply') return 90;
-  if (reason === 'completed') return 80;
   if (reason === 'error') return 70;
   return 10;
 }

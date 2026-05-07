@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import {
   app,
   BrowserWindow,
@@ -79,12 +79,24 @@ let islandPositionTimer: NodeJS.Timeout | null = null;
 let islandSurfaceRefreshTimer: NodeJS.Timeout | null = null;
 let notificationClearTimer: NodeJS.Timeout | null = null;
 const eventDeduper = new EventDeduper();
-const ISLAND_COLLAPSED_SIZE = { width: 560, height: 68 };
-const ISLAND_EXPANDED_SIZE = { width: 560, height: 372 };
+const ISLAND_SHADOW_GUTTER_X = 24;
+const ISLAND_SHADOW_GUTTER_TOP = 12;
+const ISLAND_SHADOW_GUTTER_BOTTOM = 42;
+const ISLAND_CONTENT_WIDTH = 576;
+const ISLAND_CONTENT_COLLAPSED_HEIGHT = 68;
+const ISLAND_CONTENT_EXPANDED_HEIGHT = 372;
+const ISLAND_COLLAPSED_SIZE = {
+  width: ISLAND_CONTENT_WIDTH,
+  height: ISLAND_CONTENT_COLLAPSED_HEIGHT + ISLAND_SHADOW_GUTTER_TOP + ISLAND_SHADOW_GUTTER_BOTTOM
+};
+const ISLAND_EXPANDED_SIZE = {
+  width: ISLAND_CONTENT_WIDTH,
+  height: ISLAND_CONTENT_EXPANDED_HEIGHT + ISLAND_SHADOW_GUTTER_TOP + ISLAND_SHADOW_GUTTER_BOTTOM
+};
 const ISLAND_TOP_OFFSET = 4;
 const ISLAND_BAR_HEIGHT = 44;
-const ISLAND_SHELL_TOP_PADDING = 6;
-const ISLAND_PEEK_VISIBLE_HEIGHT = 6;
+const ISLAND_SHELL_TOP_PADDING = 12;
+const ISLAND_PEEK_VISIBLE_HEIGHT = 22;
 const ISLAND_PEEK_ANIMATION_MS = 260;
 const ISLAND_TRANSPARENCY_REFRESH_DELAY_MS = 220;
 const SETTINGS_NORMAL_SIZE = { width: 1100, height: 760 };
@@ -323,7 +335,12 @@ function setIslandExpanded(expanded: boolean): void {
   islandExpanded = expanded;
   islandPeeking = false;
   if (!expanded) islandHovered = false;
-  if (expanded) setIslandLayout(ISLAND_EXPANDED_SIZE);
+  const hasActionableNotice = state.snapshot().permissions.length > 0;
+  if (expanded) {
+    setIslandLayout(ISLAND_EXPANDED_SIZE);
+  } else if (!hasActionableNotice) {
+    setIslandLayout(ISLAND_COLLAPSED_SIZE);
+  }
   positionIsland();
   updateIslandMouseInteractivity();
   islandWindow.webContents.send('island:expanded', expanded);
@@ -367,7 +384,7 @@ function getIslandCanvasBounds(): Electron.Rectangle {
     width: islandLayoutSize.width,
     height: islandLayoutSize.height,
     x: Math.round(display.workArea.x + (display.workArea.width - islandLayoutSize.width) / 2),
-    y: Math.round(islandPeeking ? peekY : display.workArea.y + ISLAND_TOP_OFFSET)
+    y: Math.round(islandPeeking ? peekY - ISLAND_SHADOW_GUTTER_TOP : display.workArea.y + ISLAND_TOP_OFFSET)
   };
 }
 
@@ -462,6 +479,9 @@ function showIsland(): void {
   const wasPeeking = islandPeeking;
   setIslandPeeking(false);
   islandWindow?.showInactive();
+  if (islandWindow && !islandWindow.isDestroyed()) {
+    islandWindow.webContents.send('app:snapshot', state.snapshot());
+  }
   if (wasPeeking) islandWindow?.webContents.send('island:show');
   if (!wasPeeking) positionIsland();
 }
@@ -879,12 +899,32 @@ function resolveJumpWorkspace(
 }
 
 function waitForPermission(request: PermissionRequest): Promise<PermissionResponse> {
+  debugPermission('wait:start', {
+    id: request.id,
+    action: request.action,
+    kind: request.kind,
+    sessionId: request.sessionId,
+    currentPermissions: state.snapshot().permissions.length,
+    expanded: islandExpanded,
+    hovered: islandHovered
+  });
   clearActiveNotification();
   state.addPermission(request);
+  debugPermission('wait:after-add', {
+    id: request.id,
+    permissions: state.snapshot().permissions.map((item) => item.id)
+  });
   updateIslandMouseInteractivity();
   broadcastSnapshot();
   showIsland();
-  setIslandExpanded(false);
+  if (islandExpanded) {
+    islandExpanded = false;
+    islandPeeking = false;
+    islandHovered = false;
+    positionIsland();
+    updateIslandMouseInteractivity();
+    islandWindow?.webContents.send('island:expanded', false);
+  }
   const config = state.getConfig();
   if (config.notifications && config.notificationStrategy !== 'silent') {
     new Notification({ title: request.action, body: request.command }).show();
@@ -895,14 +935,27 @@ function waitForPermission(request: PermissionRequest): Promise<PermissionRespon
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
       const response = createPermissionTimeoutResponse(request.id);
+      debugPermission('wait:timeout', {
+        id: request.id
+      });
       resolvePermission(response);
     }, getPermissionNoticeTimeoutMs(request.timeoutMs));
 
     permissionWaiters.set(request.id, { resolve, timer });
+    debugPermission('wait:armed', {
+      id: request.id,
+      timeoutMs: getPermissionNoticeTimeoutMs(request.timeoutMs),
+      waiterCount: permissionWaiters.size
+    });
   });
 }
 
 function resolvePermission(response: PermissionResponse): void {
+  debugPermission('resolve:start', {
+    id: response.id,
+    decision: response.decision,
+    pendingBefore: state.snapshot().permissions.map((item) => item.id)
+  });
   const waiter = permissionWaiters.get(response.id);
   if (waiter) {
     clearTimeout(waiter.timer);
@@ -912,10 +965,22 @@ function resolvePermission(response: PermissionResponse): void {
   state.resolvePermission(response);
   updateIslandMouseInteractivity();
   broadcastSnapshot();
+  debugPermission('resolve:done', {
+    id: response.id,
+    pendingAfter: state.snapshot().permissions.map((item) => item.id),
+    waiterCount: permissionWaiters.size
+  });
 }
 
 function broadcastSnapshot(): void {
   const snapshot = state.snapshot();
+  if (snapshot.permissions.length > 0) {
+    debugPermission('snapshot:broadcast', {
+      permissions: snapshot.permissions.map((item) => item.id),
+      notification: snapshot.notification?.id ?? null,
+      windowCount: BrowserWindow.getAllWindows().length
+    });
+  }
   for (const window of BrowserWindow.getAllWindows()) {
     window.webContents.send('app:snapshot', snapshot);
   }
@@ -1002,6 +1067,19 @@ function refreshDiagnostics(): void {
 
 function makeRemoteToken(): string {
   return randomBytes(24).toString('hex');
+}
+
+function debugPermission(stage: string, data: Record<string, unknown>): void {
+  try {
+    if (!storagePaths) return;
+    appendFileSync(
+      join(storagePaths.dir, 'permission-debug.log'),
+      `${new Date().toISOString()} ${stage} ${JSON.stringify(data)}\n`,
+      'utf8'
+    );
+  } catch {
+    // Ignore debug logging failures.
+  }
 }
 
 function helperPath(): string {
