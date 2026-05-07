@@ -60,9 +60,10 @@ const ISLAND_PEEK_REVEAL_HOVER_MS = 80;
 const ISLAND_PEEK_DOT_SIZE = 44;
 const ISLAND_PEEK_COMPRESS_MS = 320;
 const ISLAND_PEEK_REVEAL_TRAVEL_MS = 200;
+const ISLAND_PEEK_REVEAL_EXPAND_MS = 220;
 const ISLAND_COMPLETION_READY_DELAY_MS = 640;
 
-type IslandPeekPhase = 'visible' | 'compressing' | 'peeking' | 'revealing';
+type IslandPeekPhase = 'visible' | 'compressing' | 'peeking' | 'dropping' | 'expanding';
 type IslandPresentationPhase =
   | 'collapsed'
   | 'expanding'
@@ -71,6 +72,7 @@ type IslandPresentationPhase =
   | 'permissionNotice'
   | 'peekCompressing'
   | 'peeking'
+  | 'peekDropping'
   | 'peekRevealing';
 
 type CollapseReason =
@@ -87,6 +89,8 @@ const islandMotion = {
   micro: { duration: 0.12, ease: [0.16, 1, 0.3, 1] },
   content: { duration: 0.18, ease: [0.16, 1, 0.3, 1] },
   widthSpring: { type: 'spring', stiffness: 620, damping: 54, mass: 0.78 },
+  peekCompress: { duration: 0.22, ease: [0.32, 0, 0.67, 0] },
+  peekReveal: { duration: 0.22, ease: [0.16, 1, 0.3, 1] },
   peekWidth: { duration: 0.2, ease: [0.16, 1, 0.3, 1] },
   extensionSpring: { type: 'spring', stiffness: 460, damping: 42, mass: 0.82 },
   panelGrow: { duration: 0.3, ease: [0.16, 1, 0.3, 1] },
@@ -144,6 +148,7 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
   const permissionRef = useRef<PermissionRequest | undefined>(undefined);
   const mirroredPromptRef = useRef<NormalizedEvent | null>(null);
   const idlePeekEligibleRef = useRef(false);
+  const lastPointerPointRef = useRef<{ x: number; y: number } | null>(null);
   const [contentChanging, setContentChanging] = useState(false);
   const [jumpStatus, setJumpStatus] = useState<{ tone: 'success' | 'error'; message: string } | null>(null);
   const [completionAnimationReady, setCompletionAnimationReady] = useState(false);
@@ -202,8 +207,16 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
   );
   const islandWidth = estimateIslandWidth(primaryText, secondaryText, effectivePermissionNotice, effectiveMirroredPrompt);
   const islandCardWidth = panelMounted ? ISLAND_VISUAL_MAX_WIDTH : islandWidth;
-  const islandVisualWidth = peekVisualActive ? ISLAND_PEEK_DOT_SIZE : islandCardWidth;
-  const islandWidthTransition = peekVisualActive ? islandMotion.peekWidth : islandMotion.widthSpring;
+  const islandVisualWidth =
+    presentationPhase === 'peekCompressing' || presentationPhase === 'peeking' || presentationPhase === 'peekDropping'
+      ? ISLAND_PEEK_DOT_SIZE
+      : islandCardWidth;
+  const islandWidthTransition =
+    presentationPhase === 'peekCompressing'
+      ? islandMotion.peekCompress
+      : presentationPhase === 'peekRevealing'
+        ? islandMotion.peekReveal
+        : islandMotion.widthSpring;
   const textKey =
     effectivePermissionNotice?.id ?? effectiveMirroredPrompt?.id ?? displayNotification?.id ?? `${primaryText}:${secondaryText}`;
   const countdown = getIslandCountdown(effectivePermissionNotice ?? undefined, effectiveMirroredPrompt, displayNotification);
@@ -320,9 +333,9 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
   const setIslandPeekingState = useCallback(
     (next: boolean, options?: { hovered?: boolean }) => {
       const hovered = Boolean(options?.hovered);
-      clearPeekTransitionTimer();
 
       if (next) {
+        clearPeekTransitionTimer();
         if (peekingRef.current || presentationPhaseRef.current !== 'collapsed') return;
         setPresentationPhaseState('peekCompressing');
         peekTransitionTimerRef.current = window.setTimeout(() => {
@@ -335,6 +348,13 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
         return;
       }
 
+      if (presentationPhaseRef.current === 'peekDropping' || presentationPhaseRef.current === 'peekRevealing') {
+        if (hovered) interactionHoldRef.current = true;
+        return;
+      }
+
+      clearPeekTransitionTimer();
+
       if (presentationPhaseRef.current === 'peekCompressing') {
         setPresentationPhaseState(getNoticeTargetPhase());
         return;
@@ -345,21 +365,28 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
         return;
       }
 
-      setPresentationPhaseState('peekRevealing');
+      setPresentationPhaseState('peekDropping');
       void window.vibeIsland.setIslandPeeking(false);
       peekTransitionTimerRef.current = window.setTimeout(() => {
-        peekTransitionTimerRef.current = null;
-        peekingRef.current = false;
-        setPresentationPhaseState(getNoticeTargetPhase());
-        const stillHovered = hovered && interactionHoldRef.current;
-        if (stillHovered) void window.vibeIsland.setIslandHovered(true);
-        if (!stillHovered && idlePeekEligibleRef.current && !interactionHoldRef.current) {
-          clearAutoPeekTimer();
-          autoPeekTimerRef.current = window.setTimeout(() => {
-            autoPeekTimerRef.current = null;
-            if (!interactionHoldRef.current && presentationPhaseRef.current === 'collapsed') setIslandPeekingState(true);
-          }, ISLAND_AUTO_PEEK_IDLE_MS);
+        if (presentationPhaseRef.current !== 'peekDropping') {
+          peekTransitionTimerRef.current = null;
+          return;
         }
+        setPresentationPhaseState('peekRevealing');
+        peekTransitionTimerRef.current = window.setTimeout(() => {
+          peekTransitionTimerRef.current = null;
+          peekingRef.current = false;
+          setPresentationPhaseState(getNoticeTargetPhase());
+          const stillHovered = hovered && interactionHoldRef.current;
+          if (stillHovered) void window.vibeIsland.setIslandHovered(true);
+          if (!stillHovered && idlePeekEligibleRef.current && !interactionHoldRef.current) {
+            clearAutoPeekTimer();
+            autoPeekTimerRef.current = window.setTimeout(() => {
+              autoPeekTimerRef.current = null;
+              if (!interactionHoldRef.current && presentationPhaseRef.current === 'collapsed') setIslandPeekingState(true);
+            }, ISLAND_AUTO_PEEK_IDLE_MS);
+          }
+        }, ISLAND_PEEK_REVEAL_EXPAND_MS);
       }, ISLAND_PEEK_REVEAL_TRAVEL_MS);
     },
     [clearAutoPeekTimer, clearPeekTransitionTimer, getNoticeTargetPhase, setPresentationPhaseState]
@@ -411,6 +438,7 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
   const armPeekReveal = useCallback(
     (x: number, y: number) => {
       if (!peekingRef.current) return;
+      if (presentationPhaseRef.current !== 'peeking') return;
       if (!isPointerInsideElement(barRef.current, x, y)) {
         clearPeekRevealTimer();
         return;
@@ -426,7 +454,10 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
 
   const syncHoverAfterCollapse = useCallback(() => {
     window.setTimeout(() => {
-      void window.vibeIsland.setIslandHovered(isPointerInsideElement(barRef.current));
+      const point = lastPointerPointRef.current;
+      void window.vibeIsland.setIslandHovered(
+        point ? isPointerInsideElement(barRef.current, point.x, point.y) : false
+      );
     }, 0);
   }, []);
 
@@ -734,12 +765,18 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
 
   useEffect(() => {
     function handleMouseMove(event: MouseEvent): void {
+      lastPointerPointRef.current = { x: event.clientX, y: event.clientY };
+      if (!expanded && !peekingRef.current) {
+        const insideBar = isPointerInsideElement(barRef.current, event.clientX, event.clientY);
+        interactionHoldRef.current = insideBar;
+        void window.vibeIsland.setIslandHovered(insideBar);
+      }
       armPeekReveal(event.clientX, event.clientY);
     }
 
     window.addEventListener('mousemove', handleMouseMove);
     return () => window.removeEventListener('mousemove', handleMouseMove);
-  }, [armPeekReveal]);
+  }, [armPeekReveal, expanded]);
 
   useEffect(() => {
     if (!panelSettled) {
@@ -893,6 +930,7 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
   }
 
   function handlePointerMove(event: React.PointerEvent<HTMLElement>): void {
+    lastPointerPointRef.current = { x: event.clientX, y: event.clientY };
     if (peekingRef.current) {
       armPeekReveal(event.clientX, event.clientY);
       return;
@@ -901,7 +939,9 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
       markIslandActivity();
       return;
     }
-    void window.vibeIsland.setIslandHovered(isPointerInsideElement(barRef.current, event.clientX, event.clientY));
+    const insideBar = isPointerInsideElement(barRef.current, event.clientX, event.clientY);
+    interactionHoldRef.current = insideBar;
+    void window.vibeIsland.setIslandHovered(insideBar);
   }
 
   return (
@@ -922,8 +962,9 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
           animate={{ width: islandVisualWidth }}
           transition={islandWidthTransition}
           onMouseEnter={(event) => {
-            setInteractionHold(true);
-            void window.vibeIsland.setIslandHovered(isPointerInsideElement(barRef.current, event.clientX, event.clientY));
+            const insideBar = isPointerInsideElement(barRef.current, event.clientX, event.clientY);
+            setInteractionHold(insideBar);
+            void window.vibeIsland.setIslandHovered(insideBar);
           }}
           onMouseLeave={() => {
             setInteractionHold(false);
@@ -956,27 +997,31 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
                 width={islandVisualWidth}
               />
             ) : null}
-            <div className="island-content">
-              <span
-                className={`agent-dot ${
-                  effectivePermissionNotice?.agent ?? effectiveMirroredPrompt?.agent ?? displayNotification?.agent ?? active?.agent ?? 'unknown'
-                }`}
-              />
-              <RollingText value={primaryText} textKey={`primary-${textKey}`} className="island-primary" delay={0.06} />
-              <RollingText
-                value={secondaryText}
-                textKey={`secondary-${textKey}`}
-                className="island-secondary"
-                delay={0.12}
-              />
-              <span className="status-slot">
-                <span className="status-slot-inner" key={statusIconKey}>
-                  {renderIslandStatusIcon(visualTone, completionReady)}
+            <div className="island-content-clip">
+              <div className="island-content">
+                <span
+                  className={`agent-dot ${
+                    effectivePermissionNotice?.agent ?? effectiveMirroredPrompt?.agent ?? displayNotification?.agent ?? active?.agent ?? 'unknown'
+                  }`}
+                />
+                <RollingText value={primaryText} textKey={`primary-${textKey}`} className="island-primary" delay={0.06} />
+                <span className="island-trailing">
+                  <RollingText
+                    value={secondaryText}
+                    textKey={`secondary-${textKey}`}
+                    className="island-secondary"
+                    delay={0.12}
+                  />
+                  <span className="status-slot">
+                    <span className="status-slot-inner" key={statusIconKey}>
+                      {renderIslandStatusIcon(visualTone, completionReady)}
+                    </span>
+                  </span>
+                  <span className="toggle-slot" aria-hidden="true">
+                    <ChevronDown className="toggle-chevron" size={16} />
+                  </span>
                 </span>
-              </span>
-              <span className="toggle-slot" aria-hidden="true">
-                <ChevronDown className="toggle-chevron" size={16} />
-              </span>
+              </div>
             </div>
           </motion.button>
 
@@ -1350,13 +1395,14 @@ function isPanelPresentationPhase(phase: IslandPresentationPhase): boolean {
 }
 
 function isPeekPresentationPhase(phase: IslandPresentationPhase): boolean {
-  return phase === 'peekCompressing' || phase === 'peeking' || phase === 'peekRevealing';
+  return phase === 'peekCompressing' || phase === 'peeking' || phase === 'peekDropping' || phase === 'peekRevealing';
 }
 
 function getPeekPhaseFromPresentation(phase: IslandPresentationPhase): IslandPeekPhase {
   if (phase === 'peekCompressing') return 'compressing';
   if (phase === 'peeking') return 'peeking';
-  if (phase === 'peekRevealing') return 'revealing';
+  if (phase === 'peekDropping') return 'dropping';
+  if (phase === 'peekRevealing') return 'expanding';
   return 'visible';
 }
 
@@ -1565,7 +1611,10 @@ function getIslandTone(
 ): IslandTone {
   if (permission) return 'permission';
   if (mirroredPrompt) return 'permission';
-  if (!notification) return isSessionRunning(active) ? 'running' : 'idle';
+  if (!notification) {
+    if (isSessionCompleted(active)) return 'completed';
+    return isSessionRunning(active) ? 'running' : 'idle';
+  }
   const reason = getIslandAttentionReason(notification);
   return reason === 'none' ? 'realtime' : reason;
 }
@@ -1573,6 +1622,10 @@ function getIslandTone(
 function isSessionRunning(session: AgentSession | undefined): boolean {
   if (!session) return false;
   return ['tool-start', 'session-start', 'user', 'status'].includes(session.status);
+}
+
+function isSessionCompleted(session: AgentSession | undefined): boolean {
+  return session?.status === 'session-stop';
 }
 
 function renderIslandStatusIcon(tone: IslandTone, completionReady = false): JSX.Element {

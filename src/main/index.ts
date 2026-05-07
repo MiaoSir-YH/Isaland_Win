@@ -370,9 +370,8 @@ function setIslandPeeking(peeking: boolean): void {
 
 function updateIslandMouseInteractivity(): void {
   if (!islandWindow || islandWindow.isDestroyed()) return;
-  const clickThrough = state.getConfig().islandClickThrough;
   const hasActionableNotice = state.snapshot().permissions.length > 0;
-  const ignoreMouseEvents = !islandExpanded && !hasActionableNotice && clickThrough && !islandHovered;
+  const ignoreMouseEvents = !islandExpanded && !hasActionableNotice && !islandHovered;
   islandWindow.setIgnoreMouseEvents(ignoreMouseEvents, { forward: ignoreMouseEvents });
 }
 

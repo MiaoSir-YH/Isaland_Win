@@ -228,7 +228,8 @@ input:focus-visible {
   margin: 0 auto;
   overflow: visible;
   isolation: isolate;
-  will-change: width;
+  transform-origin: top center;
+  will-change: width, transform;
 }
 
 .island-bar {
@@ -280,11 +281,19 @@ input:focus-visible {
   transition: border-color 180ms ease, box-shadow 180ms ease, opacity 180ms ease;
 }
 
-.island-content {
+.island-content-clip {
   position: relative;
   z-index: 3;
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  border-radius: inherit;
+}
+
+.island-content {
+  position: relative;
   display: grid;
-  grid-template-columns: 12px minmax(112px, 1fr) minmax(64px, auto) 28px 16px;
+  grid-template-columns: 12px minmax(112px, 1fr) minmax(92px, auto);
   align-items: center;
   gap: 10px;
   min-height: 44px;
@@ -316,6 +325,15 @@ input:focus-visible {
   color: var(--island-muted);
   font-size: 12px;
   text-align: right;
+}
+
+.island-trailing {
+  display: inline-grid;
+  grid-template-columns: minmax(48px, auto) 28px 16px;
+  align-items: center;
+  justify-self: end;
+  gap: 10px;
+  min-width: 0;
 }
 
 .warning-icon {
@@ -392,7 +410,11 @@ input:focus-visible {
 }
 
 .state-complete .island-content {
-  grid-template-columns: 12px minmax(112px, 1fr) minmax(64px, auto) 34px 16px;
+  grid-template-columns: 12px minmax(112px, 1fr) minmax(98px, auto);
+}
+
+.state-complete .island-trailing {
+  grid-template-columns: minmax(48px, auto) 34px 16px;
 }
 
 .island-countdown,
@@ -556,15 +578,54 @@ input:focus-visible {
 }
 
 .island-card.peek-compressing .surface-chrome {
-  animation: peek-dot-compress 240ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: peek-dot-compress 220ms cubic-bezier(0.32, 0, 0.67, 0) both;
 }
 
 .island-card.peek-peeking .surface-chrome {
   animation: peek-dot-breathe 2.4s ease-in-out infinite;
 }
 
+.island-card.peek-peeking.tone-completed .surface-chrome {
+  background: linear-gradient(135deg, rgba(187, 247, 208, 0.98), rgba(74, 222, 128, 0.96) 54%, rgba(22, 163, 74, 0.98));
+  border-color: rgba(134, 239, 172, 0.74);
+  box-shadow:
+    0 0 0 1px rgba(34, 197, 94, 0.24),
+    0 0 15px rgba(34, 197, 94, 0.36),
+    0 0 28px rgba(134, 239, 172, 0.26);
+  animation: completed-peek-breathe 2.2s ease-in-out infinite;
+}
+
+.island-card.peek-peeking.tone-completed .surface-chrome::after {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 14px;
+  height: 8px;
+  content: "";
+  border-bottom: 3px solid #052e16;
+  border-left: 3px solid #052e16;
+  border-radius: 1px;
+  transform: translate(-50%, -62%) rotate(-45deg);
+}
+
+.island-card.peek-dropping .surface-chrome {
+  filter: brightness(1.08);
+}
+
 .island-card.peek-revealing .surface-chrome {
-  animation: peek-dot-reveal 200ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: peek-dot-reveal 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.island-card.peek-revealing .island-content {
+  animation: peek-content-reveal 220ms cubic-bezier(0.16, 1, 0.3, 1) 36ms both;
+}
+
+.island-card.peek-dropping.tone-completed .surface-chrome {
+  background: linear-gradient(135deg, rgba(187, 247, 208, 0.98), rgba(74, 222, 128, 0.96) 54%, rgba(22, 163, 74, 0.98));
+  border-color: rgba(134, 239, 172, 0.74);
+  box-shadow:
+    0 0 0 1px rgba(34, 197, 94, 0.24),
+    0 0 15px rgba(34, 197, 94, 0.32);
 }
 
 .tone-completed .agent-dot {
@@ -1713,10 +1774,17 @@ input:focus-visible {
 @keyframes peek-dot-compress {
   0% {
     filter: brightness(1);
+    transform: scale(1);
+  }
+
+  62% {
+    filter: brightness(1.04);
+    transform: scale(0.94, 1.08);
   }
 
   100% {
     filter: brightness(1.08);
+    transform: scale(1);
   }
 }
 
@@ -1737,13 +1805,53 @@ input:focus-visible {
   }
 }
 
+@keyframes completed-peek-breathe {
+  0%,
+  100% {
+    filter: brightness(1);
+    transform: scale(1);
+    box-shadow:
+      0 0 0 1px rgba(34, 197, 94, 0.24),
+      0 0 14px rgba(34, 197, 94, 0.32),
+      0 0 24px rgba(134, 239, 172, 0.22);
+  }
+
+  50% {
+    filter: brightness(1.08);
+    transform: scale(1.035);
+    box-shadow:
+      0 0 0 1px rgba(34, 197, 94, 0.32),
+      0 0 20px rgba(34, 197, 94, 0.42),
+      0 0 34px rgba(134, 239, 172, 0.3);
+  }
+}
+
 @keyframes peek-dot-reveal {
   0% {
     filter: brightness(1.12);
+    transform: scale(1.04, 0.96);
+  }
+
+  54% {
+    filter: brightness(1.06);
+    transform: scale(1.012, 1);
   }
 
   100% {
     filter: brightness(1);
+    transform: scale(1);
+  }
+}
+
+@keyframes peek-content-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
   }
 }
 
