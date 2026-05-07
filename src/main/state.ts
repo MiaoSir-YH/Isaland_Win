@@ -101,7 +101,7 @@ export class IslandState {
       existing.lastSeenAt = event.timestamp;
       existing.lastMessage = event.message ?? event.title;
       existing.eventCount += 1;
-      existing.workspace = event.workspace ?? existing.workspace;
+      existing.workspace = getSessionWorkspace(event, existing.workspace);
       existing.title = sessionTitle(event, existing.title);
       existing.liveness = 'live';
       existing.metadata = {
@@ -116,7 +116,7 @@ export class IslandState {
       this.sessions.unshift({
         id: sessionId,
         agent: event.agent,
-        workspace: event.workspace,
+        workspace: getSessionWorkspace(event),
         title: sessionTitle(event),
         status: event.eventType,
         lastMessage: event.message ?? event.title,
@@ -172,6 +172,11 @@ function sessionTitle(event: NormalizedEvent, fallback?: string): string {
   }
   if (event.workspace) return workspaceName(event.workspace);
   return fallback ?? event.title;
+}
+
+function getSessionWorkspace(event: NormalizedEvent, fallback?: string): string | undefined {
+  if (event.metadata?.source === 'codex-reply-watcher') return fallback;
+  return event.workspace ?? fallback;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

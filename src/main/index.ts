@@ -954,14 +954,26 @@ function resolveJumpSession(target?: string | { sessionId?: string; workspace?: 
   const sessions = state.snapshot().sessions;
   const sessionId = typeof target === 'object' ? target.sessionId : undefined;
   const workspace = typeof target === 'string' ? target : target?.workspace;
-  if (sessionId) return sessions.find((session) => session.id === sessionId);
+  if (sessionId) {
+    const session = sessions.find((item) => item.id === sessionId);
+    if (session && session.metadata?.discoverySource !== 'codex-reply-watcher') return session;
+    if (workspace) {
+      return (
+        sessions.find((item) => item.workspace === workspace && item.metadata?.terminal) ??
+        sessions.find((item) => item.workspace === workspace && item.metadata?.discoverySource !== 'codex-reply-watcher') ??
+        session
+      );
+    }
+    return getDefaultJumpSession(sessions) ?? session;
+  }
   if (workspace) {
     return (
       sessions.find((session) => session.workspace === workspace && session.metadata?.terminal) ??
+      sessions.find((session) => session.workspace === workspace && session.metadata?.discoverySource !== 'codex-reply-watcher') ??
       sessions.find((session) => session.workspace === workspace)
     );
   }
-  return sessions.find((session) => session.metadata?.terminal);
+  return getDefaultJumpSession(sessions);
 }
 
 function resolveJumpWorkspace(
@@ -970,6 +982,14 @@ function resolveJumpWorkspace(
 ): string | undefined {
   if (typeof target === 'string') return target;
   return target?.workspace ?? session?.workspace;
+}
+
+function getDefaultJumpSession(sessions: ReturnType<typeof state.snapshot>['sessions']) {
+  return (
+    sessions.find((session) => session.metadata?.terminal) ??
+    sessions.find((session) => session.workspace && session.metadata?.discoverySource !== 'codex-reply-watcher') ??
+    sessions.find((session) => session.workspace)
+  );
 }
 
 function waitForPermission(request: PermissionRequest): Promise<PermissionResponse> {

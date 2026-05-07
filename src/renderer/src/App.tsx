@@ -155,7 +155,8 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
   const dictionary = getDictionary(snapshot.config.language);
   const visibleSessions = snapshot.sessions.filter((session) => !isLowSignalSession(session));
   const active = visibleSessions[0];
-  const jumpTarget = active ? { sessionId: active.id, workspace: active.workspace } : undefined;
+  const jumpSession = getDefaultJumpSession(visibleSessions);
+  const jumpTarget = jumpSession ? { sessionId: jumpSession.id, workspace: jumpSession.workspace } : undefined;
   const notification = snapshot.notification;
   const permission = snapshot.permissions[0];
   permissionRef.current = permission;
@@ -1709,6 +1710,14 @@ function isLowSignalStatusEvent(event: NormalizedEvent): boolean {
 function isLowSignalSession(session: AgentSession): boolean {
   if (session.metadata?.discoverySource === 'jump') return true;
   return session.status === 'status' && session.lastMessage === 'Discovered local session' && !session.metadata?.terminal;
+}
+
+function getDefaultJumpSession(sessions: AgentSession[]): AgentSession | undefined {
+  return (
+    sessions.find((session) => session.metadata?.terminal) ??
+    sessions.find((session) => session.workspace && session.metadata?.discoverySource !== 'codex-reply-watcher') ??
+    sessions.find((session) => session.workspace)
+  );
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
