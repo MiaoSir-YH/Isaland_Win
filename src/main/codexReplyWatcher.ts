@@ -82,6 +82,10 @@ export function startCodexReplyWatcher(options: CodexReplyWatcherOptions): Codex
   };
 }
 
+export function isFinalCodexReplyPhase(phase?: string): boolean {
+  return /^final(?:_answer)?$/i.test(phase ?? '');
+}
+
 async function findLatestJsonl(root: string): Promise<string | null> {
   const files: Array<{ path: string; mtimeMs: number }> = [];
 

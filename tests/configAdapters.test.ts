@@ -278,6 +278,60 @@ describe('config adapters', () => {
     });
   });
 
+  it('enables the Codex hook feature and only reports Codex hooks installed when the feature is on', async () => {
+    const hooksPath = join(home, '.codex', 'hooks.json');
+    const configPath = join(home, '.codex', 'config.toml');
+
+    const installed = await installHook('codex', 'O:\\w_Island\\scripts\\vibe-island-hook.mjs', home);
+    const hooks = JSON.parse(await readFile(hooksPath, 'utf8'));
+    const config = await readFile(configPath, 'utf8');
+    const detected = (await detectAgents(home)).find((agent) => agent.id === 'codex');
+
+    expect(installed.configPath).toBe(hooksPath);
+    expect(hooks.hooks.Stop?.[0]?.command).toContain('--event Stop');
+    expect(config).toContain('[features]');
+    expect(config).toContain('codex_hooks = true');
+    expect(detected).toMatchObject({
+      id: 'codex',
+      hookInstalled: true,
+      health: 'installed'
+    });
+  });
+
+  it('does not report Codex hooks installed when hooks.json exists but codex_hooks feature is off', async () => {
+    const hooksPath = join(home, '.codex', 'hooks.json');
+    const configPath = join(home, '.codex', 'config.toml');
+    await mkdir(dirname(hooksPath), { recursive: true });
+    await writeFile(
+      hooksPath,
+      JSON.stringify(
+        {
+          version: 1,
+          hooks: {
+            Stop: [
+              {
+                command:
+                  'node "O:\\w_Island\\scripts\\vibe-island-hook.mjs" --agent codex --event Stop --managed-by managed-by-vibe-island',
+                timeout_ms: 10000
+              }
+            ]
+          }
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+    await writeFile(configPath, '[features]\nrmcp_client = true\n', 'utf8');
+
+    const detected = (await detectAgents(home)).find((agent) => agent.id === 'codex');
+
+    expect(detected).toMatchObject({
+      id: 'codex',
+      hookInstalled: false
+    });
+  });
+
   it('advertises config adapters for supported forks', async () => {
     const detected = await detectAgents(home);
     const byId = Object.fromEntries(detected.map((agent) => [agent.id, agent]));

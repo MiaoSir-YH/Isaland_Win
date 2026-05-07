@@ -167,7 +167,7 @@ function workspaceName(workspace: string): string {
 }
 
 function sessionTitle(event: NormalizedEvent, fallback?: string): string {
-  if (event.eventType === 'assistant' && event.metadata?.source === 'codex-reply-watcher') {
+  if (event.metadata?.source === 'codex-reply-watcher') {
     return 'Codex Desktop';
   }
   if (event.workspace) return workspaceName(event.workspace);

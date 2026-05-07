@@ -169,6 +169,9 @@ export function createBrowserPreviewApi(): VibeIslandApi {
       expandedListeners.add(callback);
       return () => expandedListeners.delete(callback);
     },
+    onIslandShow: () => {
+      return () => undefined;
+    },
     setExpanded: async (next) => {
       expanded = next;
       emitExpanded();

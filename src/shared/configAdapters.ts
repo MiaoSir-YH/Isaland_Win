@@ -5,6 +5,7 @@ import { dirname, isAbsolute, join } from 'node:path';
 import type { AgentDescriptor, AgentId, HookInstallResult } from './types';
 
 const MANAGED_MARKER = 'managed-by-vibe-island';
+const CODEX_HOOKS_FEATURE_TOML = '[features]\ncodex_hooks = true\n';
 
 interface AdapterSpec {
   agent: Exclude<AgentId, 'unknown'>;
@@ -111,7 +112,8 @@ export async function detectAgents(home = homedir(), helperCommand?: string): Pr
   return ADAPTERS.map((adapter) => {
     const configPath = adapter.configPath(home);
     const command = findCommand(adapter.commandCandidates);
-    const installed = configHasManagedHook(configPath);
+    const installed =
+      adapter.agent === 'codex' ? hasCodexHookFeatureEnabled(home) && configHasManagedHook(configPath) : configHasManagedHook(configPath);
     return {
       id: adapter.agent,
       name: adapter.name,
@@ -144,6 +146,7 @@ export async function installHook(agent: AgentId, helperCommand: string, home = 
       hooks.push(makeCodexHook(helperCommand, runtimeAgent, event));
       (next.hooks as Record<string, unknown>)[event] = hooks;
     }
+    await ensureCodexHookFeatureEnabled(home);
   } else {
     next.hooks = typeof next.hooks === 'object' && next.hooks !== null && !Array.isArray(next.hooks) ? next.hooks : {};
     for (const event of adapter.events) {
@@ -313,6 +316,37 @@ function configHasManagedHook(configPath: string): boolean {
 
 function isManagedHook(value: unknown): boolean {
   return JSON.stringify(value).includes(MANAGED_MARKER);
+}
+
+function getCodexConfigPath(home: string): string {
+  return join(home, '.codex', 'config.toml');
+}
+
+function hasCodexHookFeatureEnabled(home: string): boolean {
+  const configPath = getCodexConfigPath(home);
+  if (!existsSync(configPath)) return false;
+  try {
+    const text = readFileSync(configPath, 'utf8');
+    return /\[features\][\s\S]*?\bcodex_hooks\s*=\s*true\b/i.test(text);
+  } catch {
+    return false;
+  }
+}
+
+async function ensureCodexHookFeatureEnabled(home: string): Promise<void> {
+  const configPath = getCodexConfigPath(home);
+  const existing = existsSync(configPath) ? await readFile(configPath, 'utf8') : '';
+  if (/\bcodex_hooks\s*=\s*true\b/i.test(existing)) return;
+
+  let next = existing;
+  if (/\[features\]/i.test(existing)) {
+    next = existing.replace(/\[features\]\s*/i, (match) => `${match}codex_hooks = true\n`);
+  } else {
+    next = `${existing.trimEnd()}${existing.trim().length > 0 ? '\n\n' : ''}${CODEX_HOOKS_FEATURE_TOML}`;
+  }
+
+  await mkdir(dirname(configPath), { recursive: true });
+  await writeFile(configPath, next, 'utf8');
 }
 
 function arrayValue(value: unknown): unknown[] {

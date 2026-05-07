@@ -55,6 +55,13 @@
     ],
     "extraResources": [
       {
+        "from": "build/icons",
+        "to": "icons",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
         "from": "scripts",
         "to": "scripts",
         "filter": [
@@ -63,6 +70,7 @@
       }
     ],
     "win": {
+      "icon": "build/icons/vibe-island.ico",
       "signAndEditExecutable": false,
       "target": [
         "nsis",

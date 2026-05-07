@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
 import {
   app,
   BrowserWindow,
@@ -31,7 +32,7 @@ import {
 } from '@shared/configAdapters';
 import { createPermissionTimeoutResponse, getPermissionNoticeTimeoutMs } from '@shared/permission';
 import { startIpcServer, type IpcServerHandle } from './ipcServer';
-import { startCodexReplyWatcher, type CodexReplyWatcher } from './codexReplyWatcher';
+import { isFinalCodexReplyPhase, startCodexReplyWatcher, type CodexReplyWatcher } from './codexReplyWatcher';
 import { jumpToTerminalSession } from './jump';
 import { startCodexAppServer, type CodexAppServerCoordinator } from './codexAppServer';
 import { makeDiagnostics } from './diagnostics';
@@ -154,17 +155,18 @@ async function bootstrap(): Promise<void> {
   codexReplyWatcher = startCodexReplyWatcher({
     codexHome: join(app.getPath('home'), '.codex'),
     onReply: async (reply) => {
-      if (!state.getConfig().showCodexReplies) return;
+      const isFinalReply = isFinalCodexReplyPhase(reply.phase);
+      if (!isFinalReply && !state.getConfig().showCodexReplies) return;
       await recordEvent({
         schemaVersion: 1,
-        id: `codex_reply_${reply.id.slice(0, 12)}`,
+        id: `${isFinalReply ? 'codex_desktop_stop' : 'codex_reply'}_${reply.id.slice(0, 12)}`,
         timestamp: reply.timestamp,
         agent: 'codex',
-        eventType: 'assistant',
+        eventType: isFinalReply ? 'session-stop' : 'assistant',
         sessionId: 'codex-desktop-replies',
         title: summarizeReply(reply.text),
-        message: reply.phase === 'final' ? 'Codex 完成回复' : 'Codex 回复',
-        severity: 'info',
+        message: isFinalReply ? 'Codex 会话完成' : 'Codex 回复',
+        severity: isFinalReply ? 'success' : 'info',
         metadata: {
           source: 'codex-reply-watcher',
           phase: reply.phase,
@@ -429,10 +431,30 @@ function createTray(): void {
 }
 
 function createTrayIcon(): Electron.NativeImage {
-  const svg = encodeURIComponent(
-    '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" rx="9" fill="#0f766e"/><circle cx="16" cy="16" r="7" fill="#f97316"/></svg>'
-  );
-  return nativeImage.createFromDataURL(`data:image/svg+xml;charset=utf-8,${svg}`);
+  const iconDir = app.isPackaged ? join(process.resourcesPath, 'icons') : join(process.cwd(), 'build', 'icons');
+  const icon = nativeImage.createEmpty();
+  const representations = [
+    { size: 16, scaleFactor: 1 },
+    { size: 20, scaleFactor: 1.25 },
+    { size: 24, scaleFactor: 1.5 },
+    { size: 32, scaleFactor: 2 },
+    { size: 48, scaleFactor: 3 },
+    { size: 64, scaleFactor: 4 }
+  ];
+
+  for (const representation of representations) {
+    const iconPath = join(iconDir, `vibe-island-tray-${representation.size}.png`);
+    if (!existsSync(iconPath)) continue;
+    icon.addRepresentation({
+      scaleFactor: representation.scaleFactor,
+      width: 16,
+      height: 16,
+      buffer: readFileSync(iconPath)
+    });
+  }
+
+  if (!icon.isEmpty()) return icon;
+  return nativeImage.createFromPath(join(iconDir, 'vibe-island-tray.ico'));
 }
 
 function showIsland(): void {
@@ -440,6 +462,7 @@ function showIsland(): void {
   const wasPeeking = islandPeeking;
   setIslandPeeking(false);
   islandWindow?.showInactive();
+  if (wasPeeking) islandWindow?.webContents.send('island:show');
   if (!wasPeeking) positionIsland();
 }
 

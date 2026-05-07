@@ -22,6 +22,11 @@ const api = {
     ipcRenderer.on('island:expanded', listener);
     return () => ipcRenderer.off('island:expanded', listener);
   },
+  onIslandShow: (callback: () => void): (() => void) => {
+    const listener = (): void => callback();
+    ipcRenderer.on('island:show', listener);
+    return () => ipcRenderer.off('island:show', listener);
+  },
   setExpanded: (expanded: boolean): Promise<void> => ipcRenderer.invoke('island:set-expanded', expanded),
   setIslandHovered: (hovered: boolean): Promise<void> => ipcRenderer.invoke('island:set-hovered', hovered),
   setIslandPeeking: (peeking: boolean): Promise<void> => ipcRenderer.invoke('island:set-peeking', peeking),

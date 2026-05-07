@@ -315,6 +315,24 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
     [clearAutoPeekTimer, clearPeekRevealTimer, setIslandPeekingState]
   );
 
+  const restoreIslandBar = useCallback(() => {
+    if (!peekingRef.current && !isPeekPresentationPhase(presentationPhaseRef.current)) return;
+    clearAutoPeekTimer();
+    clearPeekRevealTimer();
+    clearPeekTransitionTimer();
+    peekingRef.current = false;
+    interactionHoldRef.current = false;
+    const nextPhase = permissionRef.current ? 'permissionNotice' : 'collapsed';
+    if (presentationPhaseRef.current !== nextPhase) setPresentationPhaseState(nextPhase);
+    void window.vibeIsland.setIslandPeeking(false);
+    void window.vibeIsland.setIslandHovered(false);
+  }, [
+    clearAutoPeekTimer,
+    clearPeekRevealTimer,
+    clearPeekTransitionTimer,
+    setPresentationPhaseState
+  ]);
+
   const armPeekReveal = useCallback(
     (x: number, y: number) => {
       if (!peekingRef.current) return;
@@ -445,6 +463,10 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
     });
     return unsubscribe;
   }, [clearAutoCollapseTimer, requestCollapse, setPresentationPhaseState, startExpandSequence, syncHoverAfterCollapse]);
+
+  useEffect(() => {
+    return window.vibeIsland.onIslandShow(restoreIslandBar);
+  }, [restoreIslandBar]);
 
   useEffect(() => {
     return () => {
