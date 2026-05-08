@@ -433,7 +433,6 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
   );
 
   const restoreIslandBar = useCallback(() => {
-    if (!peekingRef.current && !isPeekPresentationPhase(presentationPhaseRef.current)) return;
     clearAutoPeekTimer();
     clearPeekRevealTimer();
     clearPeekTransitionTimer();

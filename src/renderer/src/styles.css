@@ -78,6 +78,11 @@ input:focus-visible {
 }
 
 .island-shell {
+  --island-window-top-offset: 0px;
+  --island-peek-visible-height: 12px;
+  --island-peek-offset: calc(
+    -44px - 12px + var(--island-peek-visible-height) - var(--island-window-top-offset)
+  );
   --island-accent: #14b8a6;
   --island-accent-strong: #0f766e;
   --island-accent-bright: #5eead4;
@@ -229,7 +234,18 @@ input:focus-visible {
   overflow: visible;
   isolation: isolate;
   transform-origin: top center;
+  transform: translateY(0);
+  transition: transform 220ms cubic-bezier(0.16, 1, 0.3, 1);
   will-change: width, transform;
+}
+
+.island-card.peek-peeking {
+  transform: translateY(var(--island-peek-offset));
+}
+
+.island-card.peek-dropping,
+.island-card.peek-revealing {
+  transform: translateY(0);
 }
 
 .island-bar {

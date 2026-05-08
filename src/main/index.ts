@@ -80,7 +80,6 @@ let settingsRestoreBounds: Electron.Rectangle | null = null;
 let settingsDragOffset: { x: number; y: number } | null = null;
 let settingsDragBounds: Electron.Rectangle | null = null;
 let settingsDragTimer: NodeJS.Timeout | null = null;
-let islandPositionTimer: NodeJS.Timeout | null = null;
 let islandSurfaceRefreshTimer: NodeJS.Timeout | null = null;
 let notificationClearTimer: NodeJS.Timeout | null = null;
 const eventDeduper = new EventDeduper();
@@ -98,11 +97,7 @@ const ISLAND_EXPANDED_SIZE = {
   width: ISLAND_CONTENT_WIDTH,
   height: ISLAND_CONTENT_EXPANDED_HEIGHT + ISLAND_SHADOW_GUTTER_TOP + ISLAND_SHADOW_GUTTER_BOTTOM
 };
-const ISLAND_TOP_OFFSET = 4;
-const ISLAND_BAR_HEIGHT = 44;
-const ISLAND_SHELL_TOP_PADDING = 12;
-const ISLAND_PEEK_VISIBLE_HEIGHT = 16;
-const ISLAND_PEEK_ANIMATION_MS = 220;
+const ISLAND_TOP_OFFSET = 0;
 const ISLAND_TRANSPARENCY_REFRESH_DELAY_MS = 220;
 const SETTINGS_NORMAL_SIZE = { width: 1100, height: 760 };
 const SETTINGS_MIN_SIZE = { width: 940, height: 660 };
@@ -239,7 +234,6 @@ app.on('before-quit', () => {
   codexAppServer?.close();
   if (ipcServer) void ipcServer.close();
   if (remoteServer) void remoteServer.close();
-  stopIslandPositionAnimation();
   clearIslandSurfaceRefreshTimer();
 });
 
@@ -388,16 +382,10 @@ function assertTrustedIpcSender(event: Electron.IpcMainInvokeEvent, allowedViews
   }
 }
 
-function positionIsland(animated = false): void {
+function positionIsland(): void {
   if (!islandWindow || islandWindow.isDestroyed()) return;
   const nextBounds = getIslandCanvasBounds();
-  if (!animated) {
-    stopIslandPositionAnimation();
-    islandWindow.setBounds(nextBounds, false);
-    ensureIslandAlwaysOnTop();
-    return;
-  }
-  animateIslandBounds(nextBounds);
+  islandWindow.setBounds(nextBounds, false);
   ensureIslandAlwaysOnTop();
 }
 
@@ -435,7 +423,7 @@ function setIslandPeeking(peeking: boolean): void {
   if (next === islandPeeking) return;
   islandPeeking = next;
   if (!next) islandHovered = false;
-  positionIsland(true);
+  positionIsland();
   if (next) islandWindow.webContents.send('island:peeking');
   updateIslandMouseInteractivity();
 }
@@ -449,56 +437,12 @@ function updateIslandMouseInteractivity(): void {
 
 function getIslandCanvasBounds(): Electron.Rectangle {
   const display = screen.getPrimaryDisplay();
-  const peekY =
-    display.workArea.y - ISLAND_BAR_HEIGHT - ISLAND_SHELL_TOP_PADDING + ISLAND_PEEK_VISIBLE_HEIGHT;
   return {
     width: islandLayoutSize.width,
     height: islandLayoutSize.height,
     x: Math.round(display.workArea.x + (display.workArea.width - islandLayoutSize.width) / 2),
-    y: Math.round(islandPeeking ? peekY : display.workArea.y + ISLAND_TOP_OFFSET)
+    y: Math.round(display.workArea.y + ISLAND_TOP_OFFSET)
   };
-}
-
-function animateIslandBounds(targetBounds: Electron.Rectangle): void {
-  if (!islandWindow || islandWindow.isDestroyed()) return;
-  stopIslandPositionAnimation();
-  const startBounds = islandWindow.getBounds();
-  const startedAt = Date.now();
-
-  islandPositionTimer = setInterval(() => {
-    if (!islandWindow || islandWindow.isDestroyed()) {
-      stopIslandPositionAnimation();
-      return;
-    }
-
-    const progress = clamp((Date.now() - startedAt) / ISLAND_PEEK_ANIMATION_MS, 0, 1);
-    const eased = 1 - Math.pow(1 - progress, 3);
-    islandWindow.setBounds(
-      {
-        x: Math.round(lerp(startBounds.x, targetBounds.x, eased)),
-        y: Math.round(lerp(startBounds.y, targetBounds.y, eased)),
-        width: targetBounds.width,
-        height: targetBounds.height
-      },
-      false
-    );
-
-    if (progress >= 1) {
-      stopIslandPositionAnimation();
-      islandWindow.setBounds(targetBounds, false);
-      ensureIslandAlwaysOnTop();
-    }
-  }, 16);
-}
-
-function stopIslandPositionAnimation(): void {
-  if (!islandPositionTimer) return;
-  clearInterval(islandPositionTimer);
-  islandPositionTimer = null;
-}
-
-function lerp(start: number, end: number, progress: number): number {
-  return start + (end - start) * progress;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -574,7 +518,6 @@ function clearIslandSurfaceRefreshTimer(): void {
 }
 
 function recreateIslandWindowForTransparency(): void {
-  stopIslandPositionAnimation();
   islandExpanded = false;
   islandHovered = false;
   islandPeeking = false;
@@ -590,9 +533,7 @@ function recreateIslandWindowForTransparency(): void {
 
 function ensureIslandAlwaysOnTop(): void {
   if (!islandWindow || islandWindow.isDestroyed()) return;
-  islandWindow.setAlwaysOnTop(true, 'screen-saver');
-  islandWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  if (islandWindow.isVisible()) islandWindow.moveTop();
+  islandWindow.setAlwaysOnTop(true);
 }
 
 function openSettings(): void {
