@@ -82,7 +82,6 @@ let settingsDragBounds: Electron.Rectangle | null = null;
 let settingsDragTimer: NodeJS.Timeout | null = null;
 let islandPositionTimer: NodeJS.Timeout | null = null;
 let islandSurfaceRefreshTimer: NodeJS.Timeout | null = null;
-let islandTopMostTimer: NodeJS.Timeout | null = null;
 let notificationClearTimer: NodeJS.Timeout | null = null;
 const eventDeduper = new EventDeduper();
 const ISLAND_SHADOW_GUTTER_X = 24;
@@ -104,7 +103,6 @@ const ISLAND_BAR_HEIGHT = 44;
 const ISLAND_SHELL_TOP_PADDING = 12;
 const ISLAND_PEEK_VISIBLE_HEIGHT = 16;
 const ISLAND_PEEK_ANIMATION_MS = 220;
-const ISLAND_TOPMOST_REFRESH_INTERVAL_MS = 1800;
 const ISLAND_TRANSPARENCY_REFRESH_DELAY_MS = 220;
 const SETTINGS_NORMAL_SIZE = { width: 1100, height: 760 };
 const SETTINGS_MIN_SIZE = { width: 940, height: 660 };
@@ -242,7 +240,6 @@ app.on('before-quit', () => {
   if (ipcServer) void ipcServer.close();
   if (remoteServer) void remoteServer.close();
   stopIslandPositionAnimation();
-  stopIslandTopMostRefresh();
   clearIslandSurfaceRefreshTimer();
 });
 
@@ -274,7 +271,6 @@ function createIslandWindow(): void {
 
   window.setBackgroundColor('#00000000');
   ensureIslandAlwaysOnTop();
-  startIslandTopMostRefresh();
   updateIslandMouseInteractivity();
   window.on('ready-to-show', () => {
     positionIsland();
@@ -597,17 +593,6 @@ function ensureIslandAlwaysOnTop(): void {
   islandWindow.setAlwaysOnTop(true, 'screen-saver');
   islandWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   if (islandWindow.isVisible()) islandWindow.moveTop();
-}
-
-function startIslandTopMostRefresh(): void {
-  if (islandTopMostTimer) return;
-  islandTopMostTimer = setInterval(ensureIslandAlwaysOnTop, ISLAND_TOPMOST_REFRESH_INTERVAL_MS);
-}
-
-function stopIslandTopMostRefresh(): void {
-  if (!islandTopMostTimer) return;
-  clearInterval(islandTopMostTimer);
-  islandTopMostTimer = null;
 }
 
 function openSettings(): void {
