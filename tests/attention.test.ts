@@ -3,6 +3,7 @@ import {
   getIslandAttentionReason,
   getIslandNotificationPriority,
   shouldAutoClearIslandNotification,
+  shouldClearCompletedIslandNotification,
   shouldPromoteToIslandNotification,
   shouldPromoteWithStrategy,
   shouldShowSystemNotification,
@@ -118,7 +119,7 @@ describe('island attention rules', () => {
     );
 
     expect(getIslandAttentionReason(event)).toBe('completed');
-    expect(shouldAutoClearIslandNotification(event)).toBe(true);
+    expect(shouldAutoClearIslandNotification(event)).toBe(false);
   });
 
   it('suppresses interrupt completion', () => {
@@ -175,5 +176,114 @@ describe('island attention rules', () => {
     expect(shouldAutoClearIslandNotification(error)).toBe(true);
     expect(getIslandNotificationPriority(reply)).toBeGreaterThan(getIslandNotificationPriority(error));
     expect(shouldReplaceIslandNotification(error, reply)).toBe(true);
+  });
+
+  it('clears completed notifications when a next round user event arrives', () => {
+    const completed = normalizeEvent(
+      {
+        agent: 'codex',
+        eventType: 'session-stop',
+        sessionId: 's1',
+        title: '上一轮已完成'
+      },
+      'codex'
+    );
+    const nextRound = normalizeEvent(
+      {
+        agent: 'codex',
+        eventType: 'user',
+        sessionId: 's1',
+        title: '新的输入',
+        message: '继续'
+      },
+      'codex'
+    );
+
+    expect(shouldClearCompletedIslandNotification(completed, nextRound)).toBe(true);
+  });
+
+  it('clears completed notifications so lower-priority replies can replace them', () => {
+    const completed = normalizeEvent(
+      {
+        agent: 'codex',
+        eventType: 'session-stop',
+        sessionId: 's1',
+        title: '上一轮已完成'
+      },
+      'codex'
+    );
+    const reply = normalizeEvent(
+      {
+        agent: 'codex',
+        eventType: 'assistant',
+        sessionId: 's1',
+        title: 'OK',
+        source: 'codex-reply-watcher'
+      },
+      'codex'
+    );
+
+    expect(getIslandNotificationPriority(reply)).toBeLessThan(getIslandNotificationPriority(completed));
+    expect(shouldReplaceIslandNotification(completed, reply)).toBe(false);
+    expect(shouldClearCompletedIslandNotification(completed, reply)).toBe(true);
+  });
+
+  it('clears completed notifications for Codex app-server turn start status', () => {
+    const completed = normalizeEvent(
+      {
+        agent: 'codex',
+        eventType: 'session-stop',
+        sessionId: 'thread-1',
+        title: '上一轮已完成'
+      },
+      'codex'
+    );
+    const turnStart = normalizeEvent(
+      {
+        agent: 'codex',
+        eventType: 'status',
+        sessionId: 'thread-1',
+        title: 'thread.turn.started',
+        message: 'Codex Desktop thread-1',
+        source: 'codex-app-server',
+        method: 'thread.turn.started'
+      },
+      'codex'
+    );
+
+    expect(shouldClearCompletedIslandNotification(completed, turnStart)).toBe(true);
+  });
+
+  it('does not clear completed notifications for idle prompts or another completion', () => {
+    const completed = normalizeEvent(
+      {
+        agent: 'codex',
+        eventType: 'session-stop',
+        sessionId: 's1',
+        title: '上一轮已完成'
+      },
+      'codex'
+    );
+    const idlePrompt = normalizeEvent(
+      {
+        hook_event_name: 'Notification',
+        session_id: 's1',
+        message: 'Claude is waiting for your input',
+        notification_type: 'idle_prompt'
+      },
+      'claude'
+    );
+    const nextCompletion = normalizeEvent(
+      {
+        agent: 'codex',
+        eventType: 'session-stop',
+        sessionId: 's1',
+        title: '另一轮已完成'
+      },
+      'codex'
+    );
+
+    expect(shouldClearCompletedIslandNotification(completed, idlePrompt)).toBe(false);
+    expect(shouldClearCompletedIslandNotification(completed, nextCompletion)).toBe(false);
   });
 });

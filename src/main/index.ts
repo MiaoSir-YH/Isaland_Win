@@ -17,6 +17,7 @@ import {
 import type { AgentId, AppConfig, NormalizedEvent, PermissionRequest, PermissionResponse } from '@shared/types';
 import {
   shouldAutoClearIslandNotification,
+  shouldClearCompletedIslandNotification,
   shouldPromoteWithStrategy,
   shouldReplaceIslandNotification,
   shouldShowSystemNotification
@@ -33,7 +34,6 @@ import {
 import { createPermissionTimeoutResponse, getPermissionNoticeTimeoutMs } from '@shared/permission';
 import { startIpcServer, type IpcServerHandle } from './ipcServer';
 import { isFinalCodexReplyPhase, startCodexReplyWatcher, type CodexReplyWatcher } from './codexReplyWatcher';
-import { focusWindowsTerminal, jumpToTerminalSession, jumpToWorkspace, preciseJump } from './jump';
 import { startCodexAppServer, type CodexAppServerCoordinator } from './codexAppServer';
 import { makeDiagnostics } from './diagnostics';
 import { startRemoteServer, type RemotePermissionResponse, type RemoteServerHandle } from './remoteServer';
@@ -82,6 +82,7 @@ let settingsDragBounds: Electron.Rectangle | null = null;
 let settingsDragTimer: NodeJS.Timeout | null = null;
 let islandPositionTimer: NodeJS.Timeout | null = null;
 let islandSurfaceRefreshTimer: NodeJS.Timeout | null = null;
+let islandTopMostTimer: NodeJS.Timeout | null = null;
 let notificationClearTimer: NodeJS.Timeout | null = null;
 const eventDeduper = new EventDeduper();
 const ISLAND_SHADOW_GUTTER_X = 24;
@@ -101,8 +102,9 @@ const ISLAND_EXPANDED_SIZE = {
 const ISLAND_TOP_OFFSET = 4;
 const ISLAND_BAR_HEIGHT = 44;
 const ISLAND_SHELL_TOP_PADDING = 12;
-const ISLAND_PEEK_VISIBLE_HEIGHT = 22;
-const ISLAND_PEEK_ANIMATION_MS = 260;
+const ISLAND_PEEK_VISIBLE_HEIGHT = 16;
+const ISLAND_PEEK_ANIMATION_MS = 220;
+const ISLAND_TOPMOST_REFRESH_INTERVAL_MS = 1800;
 const ISLAND_TRANSPARENCY_REFRESH_DELAY_MS = 220;
 const SETTINGS_NORMAL_SIZE = { width: 1100, height: 760 };
 const SETTINGS_MIN_SIZE = { width: 940, height: 660 };
@@ -215,10 +217,22 @@ async function bootstrap(): Promise<void> {
     positionIsland();
     scheduleIslandSurfaceRefresh();
   });
-  screen.on('display-added', scheduleIslandSurfaceRefresh);
-  screen.on('display-removed', scheduleIslandSurfaceRefresh);
-  powerMonitor.on('resume', scheduleIslandSurfaceRefresh);
-  powerMonitor.on('unlock-screen', scheduleIslandSurfaceRefresh);
+  screen.on('display-added', () => {
+    scheduleIslandSurfaceRefresh();
+    ensureIslandAlwaysOnTop();
+  });
+  screen.on('display-removed', () => {
+    scheduleIslandSurfaceRefresh();
+    ensureIslandAlwaysOnTop();
+  });
+  powerMonitor.on('resume', () => {
+    scheduleIslandSurfaceRefresh();
+    ensureIslandAlwaysOnTop();
+  });
+  powerMonitor.on('unlock-screen', () => {
+    scheduleIslandSurfaceRefresh();
+    ensureIslandAlwaysOnTop();
+  });
   app.on('activate', showIsland);
 }
 
@@ -228,6 +242,7 @@ app.on('before-quit', () => {
   if (ipcServer) void ipcServer.close();
   if (remoteServer) void remoteServer.close();
   stopIslandPositionAnimation();
+  stopIslandTopMostRefresh();
   clearIslandSurfaceRefreshTimer();
 });
 
@@ -258,13 +273,15 @@ function createIslandWindow(): void {
   islandWindow = window;
 
   window.setBackgroundColor('#00000000');
-  window.setAlwaysOnTop(true, 'screen-saver');
-  window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  ensureIslandAlwaysOnTop();
+  startIslandTopMostRefresh();
   updateIslandMouseInteractivity();
   window.on('ready-to-show', () => {
     positionIsland();
     window.showInactive();
+    ensureIslandAlwaysOnTop();
   });
+  window.on('show', ensureIslandAlwaysOnTop);
   window.on('blur', () => {
     if (!islandExpanded) return;
     islandHovered = false;
@@ -381,9 +398,11 @@ function positionIsland(animated = false): void {
   if (!animated) {
     stopIslandPositionAnimation();
     islandWindow.setBounds(nextBounds, false);
+    ensureIslandAlwaysOnTop();
     return;
   }
   animateIslandBounds(nextBounds);
+  ensureIslandAlwaysOnTop();
 }
 
 function setIslandExpanded(expanded: boolean): void {
@@ -421,6 +440,7 @@ function setIslandPeeking(peeking: boolean): void {
   islandPeeking = next;
   if (!next) islandHovered = false;
   positionIsland(true);
+  if (next) islandWindow.webContents.send('island:peeking');
   updateIslandMouseInteractivity();
 }
 
@@ -439,7 +459,7 @@ function getIslandCanvasBounds(): Electron.Rectangle {
     width: islandLayoutSize.width,
     height: islandLayoutSize.height,
     x: Math.round(display.workArea.x + (display.workArea.width - islandLayoutSize.width) / 2),
-    y: Math.round(islandPeeking ? peekY - ISLAND_SHADOW_GUTTER_TOP : display.workArea.y + ISLAND_TOP_OFFSET)
+    y: Math.round(islandPeeking ? peekY : display.workArea.y + ISLAND_TOP_OFFSET)
   };
 }
 
@@ -470,6 +490,7 @@ function animateIslandBounds(targetBounds: Electron.Rectangle): void {
     if (progress >= 1) {
       stopIslandPositionAnimation();
       islandWindow.setBounds(targetBounds, false);
+      ensureIslandAlwaysOnTop();
     }
   }, 16);
 }
@@ -534,6 +555,7 @@ function showIsland(): void {
   const wasPeeking = islandPeeking;
   setIslandPeeking(false);
   islandWindow?.showInactive();
+  ensureIslandAlwaysOnTop();
   if (islandWindow && !islandWindow.isDestroyed()) {
     islandWindow.webContents.send('app:snapshot', state.snapshot());
   }
@@ -568,6 +590,24 @@ function recreateIslandWindowForTransparency(): void {
     previous.hide();
     previous.destroy();
   }
+}
+
+function ensureIslandAlwaysOnTop(): void {
+  if (!islandWindow || islandWindow.isDestroyed()) return;
+  islandWindow.setAlwaysOnTop(true, 'screen-saver');
+  islandWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  if (islandWindow.isVisible()) islandWindow.moveTop();
+}
+
+function startIslandTopMostRefresh(): void {
+  if (islandTopMostTimer) return;
+  islandTopMostTimer = setInterval(ensureIslandAlwaysOnTop, ISLAND_TOPMOST_REFRESH_INTERVAL_MS);
+}
+
+function stopIslandTopMostRefresh(): void {
+  if (!islandTopMostTimer) return;
+  clearInterval(islandTopMostTimer);
+  islandTopMostTimer = null;
 }
 
 function openSettings(): void {
@@ -759,6 +799,10 @@ function registerIpc(paths: ReturnType<typeof makeStoragePaths>): void {
   ipcMain.handle('island:set-layout', trustedIpc('island', (_event, size: { width: number; height: number }) => {
     setIslandLayout(size);
   }));
+  ipcMain.handle('notification:clear-active', trustedIpc('island', () => {
+    clearActiveNotification();
+    broadcastSnapshot();
+  }));
   ipcMain.handle('window:settings', trustedIpc('island', openSettings));
   ipcMain.handle('window:settings-control', trustedIpc('settings', (_event, action: 'close' | 'minimize' | 'zoom') =>
     controlSettingsWindow(action)
@@ -823,20 +867,10 @@ function registerIpc(paths: ReturnType<typeof makeStoragePaths>): void {
     broadcastSnapshot();
   }));
 
-  ipcMain.handle('jump:workspace', trustedIpc('island', async (_event, jumpTarget?: string | { sessionId?: string; workspace?: string }) => {
-    const session = resolveJumpSession(jumpTarget);
-    const configuredTarget = state.getConfig().jumpTarget;
-    if (configuredTarget === 'none') return { ok: false, message: '跳转失败：跳转功能已关闭。' };
-    const workspace = resolveJumpWorkspace(jumpTarget, session);
-    if (configuredTarget === 'workspace') return jumpToWorkspace(workspace);
-    if (configuredTarget === 'terminal') return focusWindowsTerminal(workspace);
-    if (configuredTarget === 'precise') {
-      const precise = await jumpToTerminalSession(session);
-      if (precise.ok) return precise;
-      return preciseJump(workspace);
-    }
-    return jumpToTerminalSession(session);
-  }));
+  ipcMain.handle('jump:workspace', trustedIpc('island', async () => ({
+    ok: false,
+    message: '跳转功能已取消。'
+  })));
 
   ipcMain.handle('agents:install-claude-status-line', trustedIpc('settings', async () => {
     const result = await installClaudeStatusLine(
@@ -912,6 +946,9 @@ async function recordEvent(event: NormalizedEvent): Promise<void> {
   const sessions = state.applyEvent(event);
   await Promise.all([appendEvent(paths, event), saveSessions(paths, sessions)]);
   const config = state.getConfig();
+  if (shouldClearCompletedIslandNotification(state.getNotification(), event)) {
+    clearActiveNotification();
+  }
   if (shouldPromoteWithStrategy(event, config.notificationStrategy)) {
     promoteIslandNotification(event);
   }
@@ -948,48 +985,6 @@ function clearActiveNotification(): void {
     notificationClearTimer = null;
   }
   state.clearNotification();
-}
-
-function resolveJumpSession(target?: string | { sessionId?: string; workspace?: string }) {
-  const sessions = state.snapshot().sessions;
-  const sessionId = typeof target === 'object' ? target.sessionId : undefined;
-  const workspace = typeof target === 'string' ? target : target?.workspace;
-  if (sessionId) {
-    const session = sessions.find((item) => item.id === sessionId);
-    if (session && session.metadata?.discoverySource !== 'codex-reply-watcher') return session;
-    if (workspace) {
-      return (
-        sessions.find((item) => item.workspace === workspace && item.metadata?.terminal) ??
-        sessions.find((item) => item.workspace === workspace && item.metadata?.discoverySource !== 'codex-reply-watcher') ??
-        session
-      );
-    }
-    return getDefaultJumpSession(sessions) ?? session;
-  }
-  if (workspace) {
-    return (
-      sessions.find((session) => session.workspace === workspace && session.metadata?.terminal) ??
-      sessions.find((session) => session.workspace === workspace && session.metadata?.discoverySource !== 'codex-reply-watcher') ??
-      sessions.find((session) => session.workspace === workspace)
-    );
-  }
-  return getDefaultJumpSession(sessions);
-}
-
-function resolveJumpWorkspace(
-  target: string | { sessionId?: string; workspace?: string } | undefined,
-  session: ReturnType<typeof resolveJumpSession>
-): string | undefined {
-  if (typeof target === 'string') return target;
-  return target?.workspace ?? session?.workspace;
-}
-
-function getDefaultJumpSession(sessions: ReturnType<typeof state.snapshot>['sessions']) {
-  return (
-    sessions.find((session) => session.metadata?.terminal) ??
-    sessions.find((session) => session.workspace && session.metadata?.discoverySource !== 'codex-reply-watcher') ??
-    sessions.find((session) => session.workspace)
-  );
 }
 
 function waitForPermission(request: PermissionRequest): Promise<PermissionResponse> {

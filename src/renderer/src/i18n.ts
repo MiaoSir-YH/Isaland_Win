@@ -36,7 +36,7 @@ export const dictionaries = {
     sections: {
       hooks: ['Agent Hooks', '安装与测试'],
       usage: ['Usage', '额度与刷新'],
-      preferences: ['偏好', '通知与跳转'],
+      preferences: ['偏好', '通知与声音'],
       shortcuts: ['Shortcuts', '快捷操作'],
       appearance: ['外观', '主题与颜色'],
       permissions: ['权限提示', '审批队列'],
@@ -68,10 +68,6 @@ export const dictionaries = {
       sound: '声音提醒',
       soundName: '提示音',
       volume: '音量',
-      jumpTarget: '跳转目标',
-      workspace: '终端优先',
-      terminal: 'Windows Terminal',
-      precise: '精确跳转',
       none: '关闭',
       noUsage: '暂无用量缓存',
       noPending: '无待处理请求',
@@ -88,9 +84,7 @@ export const dictionaries = {
       recentEvents: '最近事件',
       unavailable: 'Unavailable',
       reset: 'Reset',
-      updated: '更新',
-      jumping: '正在跳转...',
-      jumpTimeout: '跳转失败：请求超时。'
+      updated: '更新'
     },
     appearance: {
       system: ['跟随系统', '自动匹配 Windows'],
@@ -111,7 +105,7 @@ export const dictionaries = {
     sections: {
       hooks: ['Agent Hooks', 'Install and test'],
       usage: ['Usage', 'Limits and refresh'],
-      preferences: ['Preferences', 'Notifications and jump'],
+      preferences: ['Preferences', 'Notifications and sound'],
       shortcuts: ['Shortcuts', 'Quick actions'],
       appearance: ['Appearance', 'Theme and colors'],
       permissions: ['Permissions', 'Approval queue'],
@@ -143,10 +137,6 @@ export const dictionaries = {
       sound: 'Sound alerts',
       soundName: 'Sound',
       volume: 'Volume',
-      jumpTarget: 'Jump target',
-      workspace: 'Terminal first',
-      terminal: 'Windows Terminal',
-      precise: 'Precise jump',
       none: 'Disabled',
       noUsage: 'No usage cache',
       noPending: 'No pending requests',
@@ -163,9 +153,7 @@ export const dictionaries = {
       recentEvents: 'Recent Events',
       unavailable: 'Unavailable',
       reset: 'Reset',
-      updated: 'Updated',
-      jumping: 'Jumping...',
-      jumpTimeout: 'Jump failed: request timed out.'
+      updated: 'Updated'
     },
     appearance: {
       system: ['System', 'Match Windows'],

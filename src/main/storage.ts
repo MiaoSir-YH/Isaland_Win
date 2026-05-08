@@ -106,6 +106,7 @@ function normalizeConfig(stored: Partial<AppConfig> & Record<string, unknown>): 
   return {
     ...DEFAULT_CONFIG,
     ...stored,
+    jumpTarget: 'none',
     sound,
     experiments: {
       ...DEFAULT_CONFIG.experiments,

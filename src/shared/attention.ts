@@ -39,9 +39,21 @@ export function shouldReplaceIslandNotification(
   return getIslandNotificationPriority(next) >= getIslandNotificationPriority(current);
 }
 
+export function shouldClearCompletedIslandNotification(
+  current: NormalizedEvent | null,
+  next: NormalizedEvent
+): boolean {
+  if (!current || getIslandAttentionReason(current) !== 'completed') return false;
+  if (getIslandAttentionReason(next) === 'completed') return false;
+  if (isMirroredIdlePrompt(next)) return false;
+  if (isInterruptEvent(next)) return false;
+  if (getIslandAttentionReason(next) !== 'none') return true;
+  return isNextRoundActivityEvent(next);
+}
+
 export function shouldAutoClearIslandNotification(event: NormalizedEvent): boolean {
   const reason = getIslandAttentionReason(event);
-  return reason === 'completed' || reason === 'reply' || reason === 'error' || isRealtimeOnlyEvent(event);
+  return reason === 'reply' || reason === 'error' || isRealtimeOnlyEvent(event);
 }
 
 export function shouldShowSystemNotification(event: NormalizedEvent): boolean {
@@ -80,6 +92,29 @@ function isCodexReplyMirror(event: NormalizedEvent): boolean {
 
 function isRealtimeOnlyEvent(event: NormalizedEvent): boolean {
   return getIslandAttentionReason(event) === 'none';
+}
+
+function isNextRoundActivityEvent(event: NormalizedEvent): boolean {
+  if (event.eventType === 'user' || event.eventType === 'assistant') return true;
+  if (event.eventType === 'session-start' || event.eventType === 'tool-start') return true;
+  if (event.eventType === 'permission') return true;
+  if (event.eventType === 'status') return isCodexTurnStatus(event);
+  if (event.eventType === 'notification') return isActivityNotification(event);
+  return false;
+}
+
+function isCodexTurnStatus(event: NormalizedEvent): boolean {
+  if (metadataString(event, 'source') !== 'codex-app-server') return false;
+  const text = `${event.title} ${event.message ?? ''} ${metadataString(event, 'method', 'eventType', 'event_type') ?? ''}`.toLowerCase();
+  return /turn|conversation|thread|session/.test(text) && /start|started|created|input|prompt|message|running/.test(text);
+}
+
+function isActivityNotification(event: NormalizedEvent): boolean {
+  if (isMirroredIdlePrompt(event)) return false;
+  const notificationType = metadataString(event, 'notification_type')?.toLowerCase();
+  if (notificationType && /idle|statusline|heartbeat|usage|sync/.test(notificationType)) return false;
+  const text = `${notificationType ?? ''} ${event.title} ${event.message ?? ''}`.toLowerCase();
+  return /turn|conversation|message|response|started|starting|running|processing|prompt|input|开始|输入|执行|处理中|正在/.test(text);
 }
 
 function isInterruptEvent(event: NormalizedEvent): boolean {

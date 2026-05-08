@@ -27,10 +27,16 @@ const api = {
     ipcRenderer.on('island:show', listener);
     return () => ipcRenderer.off('island:show', listener);
   },
+  onIslandPeeking: (callback: () => void): (() => void) => {
+    const listener = (): void => callback();
+    ipcRenderer.on('island:peeking', listener);
+    return () => ipcRenderer.off('island:peeking', listener);
+  },
   setExpanded: (expanded: boolean): Promise<void> => ipcRenderer.invoke('island:set-expanded', expanded),
   setIslandHovered: (hovered: boolean): Promise<void> => ipcRenderer.invoke('island:set-hovered', hovered),
   setIslandPeeking: (peeking: boolean): Promise<void> => ipcRenderer.invoke('island:set-peeking', peeking),
   setIslandLayout: (size: { width: number; height: number }): Promise<void> => ipcRenderer.invoke('island:set-layout', size),
+  clearActiveNotification: (): Promise<void> => ipcRenderer.invoke('notification:clear-active'),
   openSettings: (): Promise<void> => ipcRenderer.invoke('window:settings'),
   getSettingsWindowState: (): Promise<{ maximized: boolean }> => ipcRenderer.invoke('window:settings-state'),
   onSettingsWindowState: (callback: (state: { maximized: boolean }) => void): (() => void) => {

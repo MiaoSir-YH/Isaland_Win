@@ -1,10 +1,18 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent
+} from 'react';
 import { AnimatePresence, MotionConfig, motion } from 'motion/react';
 import {
   Activity,
   AlertTriangle,
   ChevronDown,
-  ExternalLink,
   MessageCircle,
   Settings,
   ShieldAlert,
@@ -52,15 +60,15 @@ const ISLAND_NOTICE_MEASURED_BOTTOM_BUFFER = ISLAND_SHELL_PADDING_BOTTOM;
 const ISLAND_ACTION_PANEL_HEIGHT = 260;
 const ISLAND_MIRRORED_PANEL_HEIGHT = 160;
 const ISLAND_CONTENT_PULSE_MS = 380;
-const JUMP_FEEDBACK_VISIBLE_MS = 3600;
 const ISLAND_AUTO_COLLAPSE_IDLE_MS = 8000;
 const ISLAND_AUTO_PEEK_IDLE_MS = 600;
+const ISLAND_COMPLETION_AUTO_PEEK_IDLE_MS = 1500;
 const ISLAND_PEEK_AFTER_COLLAPSE_MS = 40;
 const ISLAND_PEEK_REVEAL_HOVER_MS = 80;
 const ISLAND_PEEK_DOT_SIZE = 44;
 const ISLAND_PEEK_COMPRESS_MS = 320;
-const ISLAND_PEEK_REVEAL_TRAVEL_MS = 200;
-const ISLAND_PEEK_REVEAL_EXPAND_MS = 220;
+const ISLAND_PEEK_REVEAL_TRAVEL_MS = 220;
+const ISLAND_PEEK_REVEAL_EXPAND_MS = 180;
 const ISLAND_COMPLETION_READY_DELAY_MS = 640;
 const ISLAND_COMPLETION_BURST_MS = 980;
 
@@ -84,6 +92,7 @@ type CollapseReason =
   | 'settings'
   | 'auto-idle'
   | 'permission-start'
+  | 'completion-peek'
   | 'notification-clear'
   | 'escape';
 
@@ -128,7 +137,7 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
   const [permissionNoticeClosing, setPermissionNoticeClosing] = useState(false);
   const [measuredNoticeCanvasHeight, setMeasuredNoticeCanvasHeight] = useState<number | null>(null);
   const cardRef = useRef<HTMLElement | null>(null);
-  const barRef = useRef<HTMLButtonElement | null>(null);
+  const barRef = useRef<HTMLDivElement | null>(null);
   const shellRef = useRef<HTMLElement | null>(null);
   const islandLayoutRef = useRef({ width: ISLAND_CANVAS_WIDTH, height: ISLAND_BAR_WINDOW_HEIGHT });
   const layoutTimerRef = useRef<number | null>(null);
@@ -138,7 +147,6 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
   const peekRevealTimerRef = useRef<number | null>(null);
   const peekTransitionTimerRef = useRef<number | null>(null);
   const contentPulseTimerRef = useRef<number | null>(null);
-  const jumpStatusTimerRef = useRef<number | null>(null);
   const completionReadyTimerRef = useRef<number | null>(null);
   const completionBurstTimerRef = useRef<number | null>(null);
   const completedPeekKeysRef = useRef(new Set<string>());
@@ -154,13 +162,11 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
   const idlePeekEligibleRef = useRef(false);
   const lastPointerPointRef = useRef<{ x: number; y: number } | null>(null);
   const [contentChanging, setContentChanging] = useState(false);
-  const [jumpStatus, setJumpStatus] = useState<{ tone: 'success' | 'error'; message: string } | null>(null);
   const [completionAnimationReady, setCompletionAnimationReady] = useState(false);
+  const [completionAnimationCycle, setCompletionAnimationCycle] = useState(0);
   const dictionary = getDictionary(snapshot.config.language);
   const visibleSessions = snapshot.sessions.filter((session) => !isLowSignalSession(session));
   const active = visibleSessions[0];
-  const jumpSession = getDefaultJumpSession(visibleSessions);
-  const jumpTarget = jumpSession ? { sessionId: jumpSession.id, workspace: jumpSession.workspace } : undefined;
   const notification = snapshot.notification;
   const permission = snapshot.permissions[0];
   permissionRef.current = permission;
@@ -231,17 +237,19 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
     permissionNoticeVisible ? effectiveMirroredPrompt : null,
     measuredNoticeCanvasHeight
   );
+  const completionNotificationId = displayNotification && isCompletionNotification(displayNotification) ? displayNotification.id : null;
+  const completionSessionKey = completionNotificationId
+    ? getCompletionSessionKey(active, displayNotification, textKey)
+    : null;
   const autoPeekEnabled = snapshot.config.autoPeekIsland ?? true;
-  const idlePeekEligible =
-    autoPeekEnabled &&
-    !displayNotification &&
-    !permission;
-  idlePeekEligibleRef.current = idlePeekEligible;
-  const canAutoPeek = idlePeekEligible && presentationPhase === 'collapsed';
-  const completionNotificationId = tone === 'completed' ? (displayNotification?.id ?? textKey) : null;
-  const completionSessionKey = tone === 'completed' ? getCompletionSessionKey(active, displayNotification, textKey) : null;
   const completionReady = Boolean(completionNotificationId && completionAnimationReady);
+  const completionPeekEligible = Boolean(autoPeekEnabled && completionNotificationId && completionReady && !permission);
+  const idlePeekEligible = autoPeekEnabled && !displayNotification && !permission;
+  const autoPeekEligible = idlePeekEligible || completionPeekEligible;
+  idlePeekEligibleRef.current = autoPeekEligible;
+  const canAutoPeek = autoPeekEligible && presentationPhase === 'collapsed';
   const visualTone: IslandTone = tone === 'completed' && !completionReady ? 'reply' : tone;
+  const completionPeekActive = Boolean(completionNotificationId && presentationPhase === 'peeking');
   const animationState = getIslandAnimationState({
     active,
     notification: displayNotification,
@@ -252,42 +260,11 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
   });
   const statusIconKey = `${visualTone}-${completionReady ? 'ready' : 'pending'}-${
     effectivePermissionNotice?.id ?? effectiveMirroredPrompt?.id ?? displayNotification?.id ?? active?.status ?? 'idle'
-  }`;
+  }-${completionAnimationCycle}`;
 
   const getNoticeTargetPhase = useCallback((): 'collapsed' | 'permissionNotice' => {
     return permissionRef.current || mirroredPromptRef.current ? 'permissionNotice' : 'collapsed';
   }, []);
-
-  async function requestJump(target?: string | { sessionId?: string; workspace?: string }): Promise<void> {
-    setJumpStatus({ tone: 'success', message: dictionary.labels.jumping });
-    if (jumpStatusTimerRef.current) {
-      window.clearTimeout(jumpStatusTimerRef.current);
-      jumpStatusTimerRef.current = null;
-    }
-    try {
-      const result = await withTimeout(window.vibeIsland.jumpWorkspace(target), 5000, {
-        ok: false,
-        message: dictionary.labels.jumpTimeout
-      });
-      setJumpStatus({
-        tone: result.ok ? 'success' : 'error',
-        message: result.message
-      });
-      jumpStatusTimerRef.current = window.setTimeout(() => {
-        setJumpStatus(null);
-        jumpStatusTimerRef.current = null;
-      }, JUMP_FEEDBACK_VISIBLE_MS);
-    } catch (error) {
-      setJumpStatus({
-        tone: 'error',
-        message: error instanceof Error ? error.message : String(error)
-      });
-      jumpStatusTimerRef.current = window.setTimeout(() => {
-        setJumpStatus(null);
-        jumpStatusTimerRef.current = null;
-      }, JUMP_FEEDBACK_VISIBLE_MS);
-    }
-  }
 
   const setPresentationPhaseState = useCallback((phase: IslandPresentationPhase) => {
     presentationPhaseRef.current = phase;
@@ -411,12 +388,11 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
     if (!canAutoPeek || interactionHoldRef.current || peekingRef.current || presentationPhaseRef.current !== 'collapsed') {
       return;
     }
-    if (completionSessionKey && !completedPeekKeysRef.current.has(completionSessionKey)) return;
     autoPeekTimerRef.current = window.setTimeout(() => {
       autoPeekTimerRef.current = null;
       if (!interactionHoldRef.current) setIslandPeekingState(true);
-    }, ISLAND_AUTO_PEEK_IDLE_MS);
-  }, [canAutoPeek, clearAutoPeekTimer, completionSessionKey, setIslandPeekingState]);
+    }, completionPeekEligible ? ISLAND_COMPLETION_AUTO_PEEK_IDLE_MS : ISLAND_AUTO_PEEK_IDLE_MS);
+  }, [canAutoPeek, clearAutoPeekTimer, completionPeekEligible, setIslandPeekingState]);
 
   const playCompletionBurstThenPeek = useCallback(
     (completionKey: string) => {
@@ -475,6 +451,26 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
     setPresentationPhaseState
   ]);
 
+  const forcePeekingVisual = useCallback(() => {
+    if (presentationPhaseRef.current === 'peeking' && peekingRef.current) return;
+    if (isPanelPresentationPhase(presentationPhaseRef.current) || permissionRef.current || mirroredPromptRef.current) {
+      void window.vibeIsland.setIslandPeeking(false);
+      return;
+    }
+    clearAutoPeekTimer();
+    clearPeekRevealTimer();
+    clearPeekTransitionTimer();
+    clearCompletionBurstTimer();
+    peekingRef.current = true;
+    setPresentationPhaseState('peeking');
+  }, [
+    clearAutoPeekTimer,
+    clearCompletionBurstTimer,
+    clearPeekRevealTimer,
+    clearPeekTransitionTimer,
+    setPresentationPhaseState
+  ]);
+
   const armPeekReveal = useCallback(
     (x: number, y: number) => {
       if (!peekingRef.current) return;
@@ -508,7 +504,7 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
       syncHoverAfterCollapse();
       const canPeekAfterCollapse =
         (snapshot.config.autoPeekIsland ?? true) &&
-        !displayNotification &&
+        (!displayNotification || isCompletionNotification(displayNotification)) &&
         !permissionRef.current &&
         !mirroredPromptRef.current;
       if (!canPeekAfterCollapse || interactionHoldRef.current) return;
@@ -534,7 +530,16 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
 
       clearAutoCollapseTimer();
       clearPresentationTimer();
-      revealFromPeek(false);
+      clearPeekRevealTimer();
+      clearPeekTransitionTimer();
+      clearCompletionBurstTimer();
+      if (peekingRef.current || isPeekPresentationPhase(currentPhase)) {
+        peekingRef.current = false;
+        void window.vibeIsland.setIslandPeeking(false);
+        void window.vibeIsland.setIslandHovered(false);
+      } else {
+        revealFromPeek(false);
+      }
       lastActivityAtRef.current = Date.now();
       setPresentationPhaseState('expanding');
       void window.vibeIsland.setIslandLayout({ width: ISLAND_CANVAS_WIDTH, height: ISLAND_PANEL_WINDOW_HEIGHT });
@@ -547,7 +552,15 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
         }
       }, ISLAND_PANEL_EXPAND_MS);
     },
-    [clearAutoCollapseTimer, clearPresentationTimer, revealFromPeek, setPresentationPhaseState]
+    [
+      clearAutoCollapseTimer,
+      clearCompletionBurstTimer,
+      clearPeekRevealTimer,
+      clearPeekTransitionTimer,
+      clearPresentationTimer,
+      revealFromPeek,
+      setPresentationPhaseState
+    ]
   );
 
   const requestCollapse = useCallback(
@@ -643,6 +656,10 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
   }, [restoreIslandBar]);
 
   useEffect(() => {
+    return window.vibeIsland.onIslandPeeking(forcePeekingVisual);
+  }, [forcePeekingVisual]);
+
+  useEffect(() => {
     return () => {
       if (presentationTimerRef.current) window.clearTimeout(presentationTimerRef.current);
       if (layoutTimerRef.current) window.clearTimeout(layoutTimerRef.current);
@@ -651,7 +668,6 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
       if (peekRevealTimerRef.current) window.clearTimeout(peekRevealTimerRef.current);
       if (peekTransitionTimerRef.current) window.clearTimeout(peekTransitionTimerRef.current);
       if (contentPulseTimerRef.current) window.clearTimeout(contentPulseTimerRef.current);
-      if (jumpStatusTimerRef.current) window.clearTimeout(jumpStatusTimerRef.current);
       if (completionReadyTimerRef.current) window.clearTimeout(completionReadyTimerRef.current);
       if (completionBurstTimerRef.current) window.clearTimeout(completionBurstTimerRef.current);
       void window.vibeIsland.setIslandPeeking(false);
@@ -666,6 +682,7 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
     }
 
     setCompletionAnimationReady(false);
+    setCompletionAnimationCycle((cycle) => cycle + 1);
     completionReadyTimerRef.current = window.setTimeout(() => {
       completionReadyTimerRef.current = null;
       setCompletionAnimationReady(true);
@@ -695,17 +712,24 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
     if (
       !completionSessionKey ||
       !completionReady ||
-      !idlePeekEligible ||
+      !completionPeekEligible ||
       interactionHoldRef.current ||
-      completedPeekKeysRef.current.has(completionSessionKey) ||
-      presentationPhaseRef.current !== 'collapsed'
+      completedPeekKeysRef.current.has(completionSessionKey)
     ) {
       return undefined;
     }
 
+    completedPeekKeysRef.current.add(completionSessionKey);
+
+    if (isPanelPresentationPhase(presentationPhaseRef.current)) {
+      void requestCollapse('completion-peek');
+      return undefined;
+    }
+    if (presentationPhaseRef.current !== 'collapsed') return undefined;
+
     playCompletionBurstThenPeek(completionSessionKey);
     return undefined;
-  }, [completionReady, completionSessionKey, idlePeekEligible, playCompletionBurstThenPeek]);
+  }, [completionPeekEligible, completionReady, completionSessionKey, playCompletionBurstThenPeek, requestCollapse]);
 
   useEffect(() => {
     if (permission) {
@@ -824,7 +848,7 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
   }, [islandLayout.width, islandLayout.height]);
 
   useEffect(() => {
-    if (!idlePeekEligible || interactionHoldRef.current) {
+    if (!autoPeekEligible || interactionHoldRef.current) {
       clearAutoPeekTimer();
       revealFromPeek(false);
       return undefined;
@@ -835,7 +859,7 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
     resetAutoPeekTimer();
 
     return clearAutoPeekTimer;
-  }, [canAutoPeek, clearAutoPeekTimer, idlePeekEligible, presentationPhase, resetAutoPeekTimer, revealFromPeek]);
+  }, [autoPeekEligible, canAutoPeek, clearAutoPeekTimer, presentationPhase, resetAutoPeekTimer, revealFromPeek]);
 
   useEffect(() => {
     function handleMouseMove(event: MouseEvent): void {
@@ -898,11 +922,6 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
   useEffect(() => {
     const permissionId = permission?.id;
     if (permissionId && previousPermissionIdRef.current !== permissionId) {
-      setJumpStatus(null);
-      if (jumpStatusTimerRef.current) {
-        window.clearTimeout(jumpStatusTimerRef.current);
-        jumpStatusTimerRef.current = null;
-      }
       void requestCollapse('permission-start');
     }
     previousPermissionIdRef.current = permissionId;
@@ -975,8 +994,8 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
   }, [displayNotification?.id, expanded, requestCollapse]);
 
   async function toggleExpanded(): Promise<void> {
-    if (peekingRef.current) {
-      revealFromPeek(true);
+    if (peekingRef.current || isPeekPresentationPhase(presentationPhaseRef.current)) {
+      startExpandSequence();
       return;
     }
     if (presentationPhaseRef.current === 'expanded' || presentationPhaseRef.current === 'expanding') {
@@ -984,6 +1003,12 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
       return;
     }
     startExpandSequence();
+  }
+
+  function handleBarKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    void toggleExpanded();
   }
 
   async function openSettingsFromIsland(): Promise<void> {
@@ -1018,6 +1043,16 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
     void window.vibeIsland.setIslandHovered(insideBar);
   }
 
+  function handleCompletionClear(event: React.MouseEvent<HTMLButtonElement>): void {
+    event.preventDefault();
+    event.stopPropagation();
+    clearCompletionReadyTimer();
+    clearCompletionBurstTimer();
+    setCompletionAnimationReady(false);
+    if (completionSessionKey) completedPeekKeysRef.current.add(completionSessionKey);
+    void window.vibeIsland.clearActiveNotification();
+  }
+
   return (
     <MotionConfig transition={islandMotion.widthSpring}>
       <main
@@ -1032,7 +1067,7 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
             peekVisualActive ? 'is-peeking' : ''
           } peek-${peekPhase} ${
             contentChanging ? 'is-content-changing' : ''
-          } state-${animationState} tone-${visualTone}`}
+          } ${completionPeekActive ? 'peek-completed' : ''} state-${animationState} tone-${visualTone}`}
           animate={{ width: islandVisualWidth }}
           transition={islandWidthTransition}
           onMouseEnter={(event) => {
@@ -1052,11 +1087,13 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
           }}
           onPointerMove={handlePointerMove}
         >
-          <motion.button
+          <motion.div
             ref={barRef}
             className="island-bar"
-            type="button"
+            role="button"
+            tabIndex={0}
             onClick={toggleExpanded}
+            onKeyDown={handleBarKeyDown}
             aria-label="展开或收起 Vibe Island"
             animate={{ y: animationState === 'permissionNotice' ? 1 : 0 }}
             transition={islandMotion.micro}
@@ -1088,7 +1125,7 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
                   />
                   <span className="status-slot">
                     <span className="status-slot-inner" key={statusIconKey}>
-                      {renderIslandStatusIcon(visualTone, completionReady)}
+                      {renderIslandStatusIcon(visualTone, completionReady, handleCompletionClear)}
                     </span>
                   </span>
                   <span className="toggle-slot" aria-hidden="true">
@@ -1097,7 +1134,7 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
                 </span>
               </div>
             </div>
-          </motion.button>
+          </motion.div>
 
           {!panelMounted ? (
             <AnimatePresence initial={false}>
@@ -1167,9 +1204,8 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
                       <PermissionPanel request={permission} />
                     </div>
                   ) : null}
-                  {!permission ? <SessionStrip sessions={visibleSessions} onJump={requestJump} /> : null}
+                  {!permission ? <SessionStrip sessions={visibleSessions} /> : null}
                   {!permission ? <EventList events={snapshot.events.slice(0, 2)} /> : null}
-                  {!permission && jumpStatus ? <div className={`jump-feedback ${jumpStatus.tone}`}>{jumpStatus.message}</div> : null}
                   {!permission ? (
                     <div className="panel-actions">
                       <button
@@ -1180,19 +1216,6 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
                       >
                         <Settings size={16} />
                         设置
-                      </button>
-                      <button
-                        className="icon-button label-button"
-                        type="button"
-                        onPointerDown={(event) => {
-                          if (event.button !== 0) return;
-                          event.preventDefault();
-                          event.stopPropagation();
-                          void requestJump(jumpTarget);
-                        }}
-                      >
-                        <ExternalLink size={16} />
-                        跳转
                       </button>
                     </div>
                   ) : null}
@@ -1462,9 +1485,9 @@ function estimateIslandWidth(
     mirroredPrompt?.title ??
     '';
   const detailUnits = Math.min(measureTextUnits(detailText), actionableNotice ? 42 : 20);
-  const baseWidth = primaryUnits * 8.4 + Math.min(secondaryUnits, 22) * 6.8 + 124;
+  const baseWidth = primaryUnits * 8.4 + Math.min(secondaryUnits, 16) * 6.8 + 168;
   const noticeWidthBoost = actionableNotice ? Math.max(detailUnits * 4.9, 168) : 0;
-  const minWidth = actionableNotice ? 420 : 240;
+  const minWidth = actionableNotice ? 420 : 292;
   const maxWidth = actionableNotice ? 528 : 468;
   return Math.max(minWidth, Math.min(maxWidth, Math.round(baseWidth + noticeWidthBoost)));
 }
@@ -1661,6 +1684,10 @@ function getDisplayNotification(notification: NormalizedEvent | null): Normalize
   return notification;
 }
 
+function isCompletionNotification(notification: NormalizedEvent | null): boolean {
+  return Boolean(notification && getIslandAttentionReason(notification) === 'completed');
+}
+
 function getCompletionSessionKey(
   active: AgentSession | undefined,
   notification: NormalizedEvent | null,
@@ -1693,6 +1720,7 @@ function getIslandSecondaryText(
 ): string {
   if (permission) return getActionableKindLabel(permission);
   if (mirroredPrompt) return '请在 Claude 会话中审批';
+  if (isCompletionNotification(notification)) return '已完成';
   if (notification) return notification.message ?? formatSessionSummary(active);
   if (active?.status === 'user') return active.lastMessage && active.lastMessage !== active.title ? active.lastMessage : '等待 Agent 响应';
   return formatSessionSummary(active);
@@ -1707,7 +1735,6 @@ function getIslandTone(
   if (permission) return 'permission';
   if (mirroredPrompt) return 'permission';
   if (!notification) {
-    if (isSessionCompleted(active)) return 'completed';
     return isSessionRunning(active) ? 'running' : 'idle';
   }
   const reason = getIslandAttentionReason(notification);
@@ -1723,16 +1750,26 @@ function isSessionCompleted(session: AgentSession | undefined): boolean {
   return session?.status === 'session-stop';
 }
 
-function renderIslandStatusIcon(tone: IslandTone, completionReady = false): JSX.Element {
+function renderIslandStatusIcon(
+  tone: IslandTone,
+  completionReady = false,
+  onClearCompletion?: (event: React.MouseEvent<HTMLButtonElement>) => void
+): JSX.Element {
   if (tone === 'permission') return <ShieldAlert size={18} className="status-icon warning-icon" />;
   if (tone === 'error') return <AlertTriangle size={18} className="status-icon error-icon" />;
   if (tone === 'completed') {
     return (
-      <span className={`completion-badge ${completionReady ? 'is-ready' : 'is-waiting'}`} aria-label="任务完成">
+      <button
+        className={`completion-badge ${completionReady ? 'is-ready' : 'is-waiting'}`}
+        type="button"
+        aria-label="取消显示完成状态"
+        title="取消显示完成状态"
+        onClick={onClearCompletion}
+      >
         <svg className="completion-check" viewBox="0 0 24 24" aria-hidden="true">
           <path d="M5.2 12.6 9.4 16.8 18.9 6.9" />
         </svg>
-      </span>
+      </button>
     );
   }
   if (tone === 'question') return <MessageCircle size={18} className="status-icon question-icon" />;
@@ -1799,29 +1836,6 @@ function isLowSignalStatusEvent(event: NormalizedEvent): boolean {
 function isLowSignalSession(session: AgentSession): boolean {
   if (session.metadata?.discoverySource === 'jump') return true;
   return session.status === 'status' && session.lastMessage === 'Discovered local session' && !session.metadata?.terminal;
-}
-
-function getDefaultJumpSession(sessions: AgentSession[]): AgentSession | undefined {
-  return (
-    sessions.find((session) => session.metadata?.terminal) ??
-    sessions.find((session) => session.workspace && session.metadata?.discoverySource !== 'codex-reply-watcher') ??
-    sessions.find((session) => session.workspace)
-  );
-}
-
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = window.setTimeout(() => resolve(fallback), timeoutMs);
-    void promise
-      .then((value) => {
-        window.clearTimeout(timer);
-        resolve(value);
-      })
-      .catch((error: unknown) => {
-        window.clearTimeout(timer);
-        reject(error);
-      })
-  });
 }
 
 export default App;

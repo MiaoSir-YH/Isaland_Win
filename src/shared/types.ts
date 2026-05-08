@@ -227,7 +227,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   showCodexReplies: true,
   autoPeekIsland: true,
   islandClickThrough: false,
-  jumpTarget: 'workspace',
+  jumpTarget: 'none',
   experiments: {
     codexAppServer: false,
     sessionDiscovery: true,

@@ -172,6 +172,9 @@ export function createBrowserPreviewApi(): VibeIslandApi {
     onIslandShow: () => {
       return () => undefined;
     },
+    onIslandPeeking: () => {
+      return () => undefined;
+    },
     setExpanded: async (next) => {
       expanded = next;
       emitExpanded();
@@ -179,6 +182,13 @@ export function createBrowserPreviewApi(): VibeIslandApi {
     setIslandHovered: async () => undefined,
     setIslandPeeking: async () => undefined,
     setIslandLayout: async () => undefined,
+    clearActiveNotification: async () => {
+      snapshot = {
+        ...snapshot,
+        notification: null
+      };
+      emitSnapshot();
+    },
     openSettings: async () => {
       window.location.search = '?view=settings';
     },
@@ -308,8 +318,8 @@ export function createBrowserPreviewApi(): VibeIslandApi {
       return snapshot.config.update;
     },
     jumpWorkspace: async () => ({
-      ok: true,
-      message: '浏览器预览：已模拟跳转。'
+      ok: false,
+      message: '跳转功能已取消。'
     }),
     sendSampleEvent: async (agent: AgentId) => {
       sampleCount += 1;

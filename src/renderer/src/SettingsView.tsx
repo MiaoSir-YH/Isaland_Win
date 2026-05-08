@@ -6,7 +6,6 @@ import {
   Bell,
   Bug,
   ExternalLink,
-  FlaskConical,
   Info,
   Keyboard,
   Languages,
@@ -477,20 +476,6 @@ export function SettingsView({ snapshot }: { snapshot: AppSnapshot }): JSX.Eleme
                     />
                     <strong>{Math.round(snapshot.config.sound.volume * 100)}%</strong>
                   </label>
-                  <label className="field-row">
-                    <span>{dictionary.labels.jumpTarget}</span>
-                    <select
-                      value={snapshot.config.jumpTarget}
-                      onChange={(event) =>
-                        updateConfig({ jumpTarget: event.currentTarget.value as AppConfig['jumpTarget'] })
-                      }
-                    >
-                      <option value="workspace">{dictionary.labels.workspace}</option>
-                      <option value="terminal">{dictionary.labels.terminal}</option>
-                      <option value="precise">{dictionary.labels.precise}</option>
-                      <option value="none">{dictionary.labels.none}</option>
-                    </select>
-                  </label>
                 </section>
               ) : null}
 
@@ -691,16 +676,6 @@ export function SettingsView({ snapshot }: { snapshot: AppSnapshot }): JSX.Eleme
                     onChange={(checked) =>
                       updateConfig({
                         experiments: { ...snapshot.config.experiments, sessionDiscovery: checked }
-                      })
-                    }
-                  />
-                  <SettingToggle
-                    icon={<FlaskConical size={17} />}
-                    label="Precise Jump"
-                    checked={snapshot.config.experiments.preciseJump}
-                    onChange={(checked) =>
-                      updateConfig({
-                        experiments: { ...snapshot.config.experiments, preciseJump: checked }
                       })
                     }
                   />
