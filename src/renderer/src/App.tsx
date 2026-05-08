@@ -62,6 +62,7 @@ const ISLAND_PEEK_COMPRESS_MS = 320;
 const ISLAND_PEEK_REVEAL_TRAVEL_MS = 200;
 const ISLAND_PEEK_REVEAL_EXPAND_MS = 220;
 const ISLAND_COMPLETION_READY_DELAY_MS = 640;
+const ISLAND_COMPLETION_BURST_MS = 980;
 
 type IslandPeekPhase = 'visible' | 'compressing' | 'peeking' | 'dropping' | 'expanding';
 type IslandPresentationPhase =
@@ -70,6 +71,7 @@ type IslandPresentationPhase =
   | 'expanded'
   | 'collapsing'
   | 'permissionNotice'
+  | 'completionBurst'
   | 'peekCompressing'
   | 'peeking'
   | 'peekDropping'
@@ -138,6 +140,8 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
   const contentPulseTimerRef = useRef<number | null>(null);
   const jumpStatusTimerRef = useRef<number | null>(null);
   const completionReadyTimerRef = useRef<number | null>(null);
+  const completionBurstTimerRef = useRef<number | null>(null);
+  const completedPeekKeysRef = useRef(new Set<string>());
   const previousTextKeyRef = useRef<string | null>(null);
   const previousPermissionIdRef = useRef<string | undefined>(undefined);
   const previousNotificationIdRef = useRef<string | null>(null);
@@ -235,6 +239,7 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
   idlePeekEligibleRef.current = idlePeekEligible;
   const canAutoPeek = idlePeekEligible && presentationPhase === 'collapsed';
   const completionNotificationId = tone === 'completed' ? (displayNotification?.id ?? textKey) : null;
+  const completionSessionKey = tone === 'completed' ? getCompletionSessionKey(active, displayNotification, textKey) : null;
   const completionReady = Boolean(completionNotificationId && completionAnimationReady);
   const visualTone: IslandTone = tone === 'completed' && !completionReady ? 'reply' : tone;
   const animationState = getIslandAnimationState({
@@ -331,12 +336,20 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
     }
   }, []);
 
+  const clearCompletionBurstTimer = useCallback(() => {
+    if (completionBurstTimerRef.current) {
+      window.clearTimeout(completionBurstTimerRef.current);
+      completionBurstTimerRef.current = null;
+    }
+  }, []);
+
   const setIslandPeekingState = useCallback(
     (next: boolean, options?: { hovered?: boolean }) => {
       const hovered = Boolean(options?.hovered);
 
       if (next) {
         clearPeekTransitionTimer();
+        clearCompletionBurstTimer();
         if (peekingRef.current || presentationPhaseRef.current !== 'collapsed') return;
         setPresentationPhaseState('peekCompressing');
         peekTransitionTimerRef.current = window.setTimeout(() => {
@@ -390,7 +403,7 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
         }, ISLAND_PEEK_REVEAL_EXPAND_MS);
       }, ISLAND_PEEK_REVEAL_TRAVEL_MS);
     },
-    [clearAutoPeekTimer, clearPeekTransitionTimer, getNoticeTargetPhase, setPresentationPhaseState]
+    [clearAutoPeekTimer, clearCompletionBurstTimer, clearPeekTransitionTimer, getNoticeTargetPhase, setPresentationPhaseState]
   );
 
   const resetAutoPeekTimer = useCallback(() => {
@@ -398,11 +411,37 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
     if (!canAutoPeek || interactionHoldRef.current || peekingRef.current || presentationPhaseRef.current !== 'collapsed') {
       return;
     }
+    if (completionSessionKey && !completedPeekKeysRef.current.has(completionSessionKey)) return;
     autoPeekTimerRef.current = window.setTimeout(() => {
       autoPeekTimerRef.current = null;
       if (!interactionHoldRef.current) setIslandPeekingState(true);
     }, ISLAND_AUTO_PEEK_IDLE_MS);
-  }, [canAutoPeek, clearAutoPeekTimer, setIslandPeekingState]);
+  }, [canAutoPeek, clearAutoPeekTimer, completionSessionKey, setIslandPeekingState]);
+
+  const playCompletionBurstThenPeek = useCallback(
+    (completionKey: string) => {
+      clearAutoPeekTimer();
+      clearCompletionBurstTimer();
+      if (presentationPhaseRef.current !== 'collapsed' || interactionHoldRef.current || peekingRef.current) return;
+      completedPeekKeysRef.current.add(completionKey);
+      setPresentationPhaseState('completionBurst');
+      completionBurstTimerRef.current = window.setTimeout(() => {
+        completionBurstTimerRef.current = null;
+        if (
+          presentationPhaseRef.current !== 'completionBurst' ||
+          interactionHoldRef.current ||
+          permissionRef.current ||
+          mirroredPromptRef.current
+        ) {
+          if (presentationPhaseRef.current === 'completionBurst') setPresentationPhaseState(getNoticeTargetPhase());
+          return;
+        }
+        setPresentationPhaseState('collapsed');
+        setIslandPeekingState(true);
+      }, ISLAND_COMPLETION_BURST_MS);
+    },
+    [clearAutoPeekTimer, clearCompletionBurstTimer, getNoticeTargetPhase, setIslandPeekingState, setPresentationPhaseState]
+  );
 
   const revealFromPeek = useCallback(
     (hovered = false) => {
@@ -614,6 +653,7 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
       if (contentPulseTimerRef.current) window.clearTimeout(contentPulseTimerRef.current);
       if (jumpStatusTimerRef.current) window.clearTimeout(jumpStatusTimerRef.current);
       if (completionReadyTimerRef.current) window.clearTimeout(completionReadyTimerRef.current);
+      if (completionBurstTimerRef.current) window.clearTimeout(completionBurstTimerRef.current);
       void window.vibeIsland.setIslandPeeking(false);
     };
   }, []);
@@ -633,6 +673,39 @@ function IslandView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
 
     return clearCompletionReadyTimer;
   }, [clearCompletionReadyTimer, completionNotificationId]);
+
+  useEffect(() => {
+    if (presentationPhase !== 'completionBurst') return undefined;
+    if (!completionSessionKey || permission || mirroredPrompt || interactionHoldRef.current) {
+      clearCompletionBurstTimer();
+      setPresentationPhaseState(getNoticeTargetPhase());
+    }
+    return undefined;
+  }, [
+    clearCompletionBurstTimer,
+    completionSessionKey,
+    getNoticeTargetPhase,
+    mirroredPrompt,
+    permission,
+    presentationPhase,
+    setPresentationPhaseState
+  ]);
+
+  useEffect(() => {
+    if (
+      !completionSessionKey ||
+      !completionReady ||
+      !idlePeekEligible ||
+      interactionHoldRef.current ||
+      completedPeekKeysRef.current.has(completionSessionKey) ||
+      presentationPhaseRef.current !== 'collapsed'
+    ) {
+      return undefined;
+    }
+
+    playCompletionBurstThenPeek(completionSessionKey);
+    return undefined;
+  }, [completionReady, completionSessionKey, idlePeekEligible, playCompletionBurstThenPeek]);
 
   useEffect(() => {
     if (permission) {
@@ -1412,6 +1485,10 @@ function getPeekPhaseFromPresentation(phase: IslandPresentationPhase): IslandPee
   return 'visible';
 }
 
+function isCompletionBurstPhase(phase: IslandPresentationPhase): boolean {
+  return phase === 'completionBurst';
+}
+
 function getIslandLayout(
   presentationPhase: IslandPresentationPhase,
   permission: PermissionRequest | undefined,
@@ -1486,6 +1563,7 @@ type IslandAnimationState =
   | 'notify'
   | 'permissionNotice'
   | 'complete'
+  | 'completionBurst'
   | 'expanded'
   | 'collapsing'
   | 'peeking';
@@ -1506,6 +1584,7 @@ function getIslandAnimationState({
   tone: IslandTone;
 }): IslandAnimationState {
   if (presentationPhase === 'collapsing') return 'collapsing';
+  if (isCompletionBurstPhase(presentationPhase)) return 'completionBurst';
   if (tone === 'completed' && presentationPhase === 'expanded') return 'complete';
   if (presentationPhase === 'expanding' || presentationPhase === 'expanded') return 'expanded';
   if (isPeekPresentationPhase(presentationPhase)) return 'peeking';
@@ -1580,6 +1659,16 @@ function getDisplayNotification(notification: NormalizedEvent | null): Normalize
   if (!notification) return null;
   if (isLowSignalStatusEvent(notification)) return null;
   return notification;
+}
+
+function getCompletionSessionKey(
+  active: AgentSession | undefined,
+  notification: NormalizedEvent | null,
+  fallback: string
+): string {
+  return active?.status === 'session-stop'
+    ? `session:${active.id}:${active.lastSeenAt}`
+    : `notification:${notification?.id ?? fallback}`;
 }
 
 function getIslandPrimaryText(
